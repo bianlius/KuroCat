@@ -70,6 +70,26 @@ final class CatSettings {
     var footEasterEgg: Bool {
         didSet { UserDefaults.standard.set(footEasterEgg, forKey: "KuroCat.FootEasterEgg") }
     }
+    var tailEasterEgg: Bool {
+        didSet { UserDefaults.standard.set(tailEasterEgg, forKey: "KuroCat.TailEasterEgg") }
+    }
+    var keyboardMarquee: Bool {
+        didSet { UserDefaults.standard.set(keyboardMarquee, forKey: "KuroCat.KeyboardMarquee") }
+    }
+    /// 0 = normal desktop overlay, 1 = OBS transparent window capture, 2 = OBS green screen (#00FF00)
+    var obsCaptureMode: Int {
+        didSet { UserDefaults.standard.set(obsCaptureMode, forKey: "KuroCat.OBSCaptureMode") }
+    }
+    var flipHorizontal: Bool {
+        didSet { UserDefaults.standard.set(flipHorizontal, forKey: "KuroCat.FlipHorizontal") }
+    }
+    /// "zh" or "en"
+    var language: String {
+        didSet { UserDefaults.standard.set(language, forKey: "KuroCat.Language") }
+    }
+    var isEnglish: Bool { language == "en" }
+    /// Runtime-only interactive resize & flip bounding box (toggled via double-click or menu)
+    var isEditMode: Bool = false
     var petInteraction: Bool {
         didSet { UserDefaults.standard.set(petInteraction, forKey: "KuroCat.PetInteraction") }
     }
@@ -98,6 +118,11 @@ final class CatSettings {
         showMouseBadges = d.object(forKey: "KuroCat.ShowMouseBadges") as? Bool ?? true
         showKeyLegends = d.object(forKey: "KuroCat.ShowKeyLegends") as? Bool ?? true
         footEasterEgg = d.object(forKey: "KuroCat.FootEasterEgg") as? Bool ?? true
+        tailEasterEgg = d.object(forKey: "KuroCat.TailEasterEgg") as? Bool ?? true
+        keyboardMarquee = d.object(forKey: "KuroCat.KeyboardMarquee") as? Bool ?? true
+        obsCaptureMode = d.object(forKey: "KuroCat.OBSCaptureMode") as? Int ?? 0
+        flipHorizontal = d.object(forKey: "KuroCat.FlipHorizontal") as? Bool ?? false
+        language = d.string(forKey: "KuroCat.Language") ?? "zh"
         petInteraction = d.object(forKey: "KuroCat.PetInteraction") as? Bool ?? true
         fullClickThrough = d.object(forKey: "KuroCat.FullClickThrough") as? Bool ?? false
         fullScreenOverlay = d.object(forKey: "KuroCat.FullScreenOverlay") as? Bool ?? true
@@ -202,6 +227,16 @@ final class CatPhysics {
     var rightPaw = Spring2D(rightPawRest)
     var hindFoot = Spring2D(hindFootRest)
     var hindFootActive = Spring1D(0) // 0 = tucked, 1 = kicking 3rd key
+    var tailTip = Spring2D(CGPoint(x: 275, y: 196))
+    var tailTyping = Spring1D(0)
+    var tailFlick = Spring2D(.zero)
+    var tailCurl = Spring1D(0)
+    var tailAgility = Spring1D(0)
+    private var tailFlickHold: CGFloat = 0
+    private var tailFlickCooldown: CGFloat = 0
+    // Keyboard marquee: normalized position (0..1) of the light head, plus its speed boost.
+    var marqueePhase: CGFloat = 0
+    var marqueeBoost = Spring1D(0)
 
     var bodyShiftX = Spring1D(0)
     var bodyTilt = Spring1D(0)       // radians
@@ -253,6 +288,10 @@ final class CatPhysics {
 
     // Sleepy idle state
     private(set) var sleepiness: CGFloat = 0 // 0 = awake, 1 = napping
+    private(set) var yawnAmount: CGFloat = 0 // 0 = closed, 1 = peak wide yawn before sleep
+    private var yawnTimer: CGFloat = 0
+    private var isYawning = false
+    private var hasYawnedThisIdle = false
     private var sleepZCooldown: CGFloat = 0
 
     // Recent key memory so fast single taps linger visibly (~140ms)
@@ -263,7 +302,7 @@ final class CatPhysics {
     // Computed eye closure (0 = wide open, 0.55 = half squint, 1 = fully closed)
     var effectiveEyeClosure: CGFloat {
         let petClose = max(petHeadIntensity * 1.0, petBodyIntensity * 0.62)
-        let sleepClose = sleepiness * 0.92
+        let sleepClose = max(sleepiness * 0.92, yawnAmount * 0.96)
         return min(1.0, max(blinkProgress, max(petClose, sleepClose)))
     }
 
@@ -330,8 +369,9 @@ final class CatPhysics {
             }
             pupilScale.target = 1.12
             earTwitch.velocity -= 2.2
-            if CatSettings.shared.showMouseBadges {
-                let label = button == 0 ? "左键" : (button == 1 ? "右键" : "中键")
+            if CatSettings.shared.showKeyBadges {
+                let en = CatSettings.shared.isEnglish
+                let label = button == 0 ? (en ? "LMB" : "左键") : (button == 1 ? (en ? "RMB" : "右键") : (en ? "MMB" : "中键"))
                 let pt = CGPoint(
                     x: CatPhysics.mouseBaseCenter.x + mouseOffset.point.x,
                     y: CatPhysics.mouseBaseCenter.y + mouseOffset.point.y - 6
@@ -341,6 +381,68 @@ final class CatPhysics {
         } else {
             if button == 0 { mousePressLeft.target = 0 }
             else { mousePressRight.target = 0 }
+        }
+    }
+
+    /// Called by the overlay window when cursor hovers near the cat's tail: whips away flexibly!
+    func updateTailHover(canvasPoint cp: CGPoint?) {
+        guard let cp, tailTyping.value < 0.25 else { return }
+        let seatX = CatPhysics.seatAnchor.x + bodyShiftX.value
+        let seatY = CatPhysics.seatAnchor.y
+        let hunt = max(0, min(1, huntIntensity.value))
+        let agility = max(0, min(1, tailAgility.value))
+        let wag1 = sin(tailPhase) * (8.0 + hunt * 5.5 + agility * 4.0)
+        let wag2 = cos(tailPhase * 1.3) * (6.0 + hunt * 4.5 + agility * 3.5)
+        let huntDrop = hunt * 14.0
+        let fx = tailFlick.point.x
+        let fy = tailFlick.point.y
+        let curl = tailCurl.value
+
+        let root = CGPoint(x: seatX + 34, y: seatY - 6)
+        let c1 = CGPoint(x: seatX + 64 + fx * 0.25, y: seatY + 2 + wag1 * 0.35 + huntDrop * 0.4 + fy * 0.22 + curl * 0.35)
+        let c2 = CGPoint(x: seatX + 66 + wag2 * 0.4 + fx * 0.65 - curl * 0.45, y: seatY - 26 + wag1 * 0.7 + huntDrop + fy * 0.60 - curl * 0.55)
+        let tip = CGPoint(x: seatX + 91 + wag2 * 0.5 + fx, y: seatY - 30 + wag1 * 0.85 + huntDrop + fy)
+
+        var bestDist: CGFloat = .greatestFiniteMagnitude
+        var bestPt = tip
+        for t: CGFloat in [0.35, 0.58, 0.80, 1.0] {
+            let u = 1 - t
+            let pt = CGPoint(
+                x: u*u*u*root.x + 3*u*u*t*c1.x + 3*u*t*t*c2.x + t*t*t*tip.x,
+                y: u*u*u*root.y + 3*u*u*t*c1.y + 3*u*t*t*c2.y + t*t*t*tip.y
+            )
+            let d = hypot(pt.x - cp.x, pt.y - cp.y)
+            if d < bestDist {
+                bestDist = d
+                bestPt = pt
+            }
+        }
+
+        if bestDist < 24.0 {
+            var ax = bestPt.x - cp.x
+            var ay = bestPt.y - cp.y
+            let len = hypot(ax, ay)
+            if len < 1.0 {
+                ax = 0.35
+                ay = -0.94
+            } else {
+                ax /= len
+                ay /= len
+            }
+            let targetX = max(-24.0, min(36.0, ax * 32.0 + (ax >= 0 ? 6.0 : -4.0)))
+            let targetY = max(-44.0, min(38.0, ay * 40.0 + (ay < 0 ? -8.0 : 6.0)))
+            tailFlick.target = CGPoint(x: targetX, y: targetY)
+            tailCurl.target = ay >= 0 ? -18.0 : 20.0
+            if tailFlickCooldown <= 0 {
+                tailFlick.x.velocity += ax * 240.0
+                tailFlick.y.velocity += ay * 280.0
+                tailCurl.velocity += (ay >= 0 ? -150.0 : 170.0)
+                earTwitch.velocity += 1.4
+                tailFlickCooldown = 0.16
+            }
+            tailFlickHold = 0.30
+            tailAgility.target = 1.0
+            sleepiness = max(0, sleepiness - 0.15)
         }
     }
 
@@ -445,9 +547,35 @@ final class CatPhysics {
             }
         }
 
-        // 2. Sleepy idle detection
+        // 2. Sleepy idle detection (+ cute yawn right before drifting off to sleep!)
         let lastAnyActivity = max(curLastKeyTime, max(curLastMouseMove, lastPetTime))
         let idleSeconds = lastAnyActivity > 0 ? (now - lastAnyActivity) : 0
+        if activeKeys.isEmpty && idleSeconds > 42 && !isYawning && !hasYawnedThisIdle {
+            isYawning = true
+            hasYawnedThisIdle = true
+            yawnTimer = 0
+        }
+        if !activeKeys.isEmpty || idleSeconds < 5 {
+            isYawning = false
+            hasYawnedThisIdle = false
+            yawnAmount = max(0, yawnAmount - dt * 6.0)
+        } else if isYawning {
+            yawnTimer += dt
+            if yawnTimer < 0.65 {
+                let u = yawnTimer / 0.65
+                yawnAmount = u * u * (3 - 2 * u)
+            } else if yawnTimer < 1.55 {
+                yawnAmount = 1.0
+            } else if yawnTimer < 2.35 {
+                let u = (2.35 - yawnTimer) / 0.80
+                yawnAmount = u * u * (3 - 2 * u)
+            } else {
+                yawnAmount = 0
+                isYawning = false
+            }
+        } else {
+            yawnAmount = max(0, yawnAmount - dt * 4.0)
+        }
         if activeKeys.isEmpty && idleSeconds > 45 {
             let targetSleep = min(1.0, CGFloat((idleSeconds - 45) / 35.0))
             sleepiness += (targetSleep - sleepiness) * dt * 1.5
@@ -577,6 +705,32 @@ final class CatPhysics {
             hindFootActive.target = 0.0
         }
 
+        // Held physical keys determine the mode; repeats and mouse buttons do not count.
+        tailTyping.target = (CatSettings.shared.tailEasterEgg && activeKeys.count == 4) ? 1 : 0
+        tailTyping.step(dt: dt, stiffness: 180, damping: 24)
+        // Marquee chase across the keyboard deck: steady sweep, faster while many keys are held.
+        if CatSettings.shared.keyboardMarquee {
+            marqueeBoost.target = max(0, min(1, (CGFloat(activeKeys.count) - 2) / 5))
+            marqueeBoost.step(dt: dt, stiffness: 90, damping: 20)
+            marqueePhase = (marqueePhase + dt * (0.42 + 0.40 * marqueeBoost.value)).truncatingRemainder(dividingBy: 1.0)
+        }
+        let tailKey = orderedKeys.first { $0 != leftKey && $0 != rightKey && $0 != footKey }
+        var tip = tailTyping.target > 0 ? tailKey.map { KeyboardLayout.canvasPoint(for: $0) } ?? CGPoint(x: 275, y: 196) : CGPoint(x: 275, y: 196)
+        tip.y -= tailTyping.target * (1 + sin(time * 18)) * 3
+        tailTip.target = tip
+        tailTip.step(dt: dt, stiffness: 280, damping: 26)
+
+        tailFlickHold = max(0, tailFlickHold - dt)
+        tailFlickCooldown = max(0, tailFlickCooldown - dt)
+        if tailFlickHold <= 0 {
+            tailFlick.target = .zero
+            tailCurl.target = 0
+            tailAgility.target = 0
+        }
+        tailFlick.step(dt: dt, stiffness: 150, damping: 12)
+        tailCurl.step(dt: dt, stiffness: 135, damping: 10.5)
+        tailAgility.step(dt: dt, stiffness: 40, damping: 10)
+
         leftPaw.step(dt: dt, stiffness: 360, damping: 24)
         rightPaw.step(dt: dt, stiffness: 360, damping: 24)
         hindFoot.step(dt: dt, stiffness: 320, damping: 22)
@@ -699,7 +853,8 @@ final class CatPhysics {
         let kpmBoost = min(2.4, CGFloat(engine.currentKPM) / 160.0)
         let petBoost = max(petHeadIntensity, petBodyIntensity) * 1.4
         let huntBoost = hunt * 2.8
-        let tailSpeed: CGFloat = 1.85 + kpmBoost + petBoost + huntBoost - sleepiness * 1.1
+        let agilityBoost = max(0, min(1, tailAgility.value)) * 3.2
+        let tailSpeed: CGFloat = 1.85 + kpmBoost + petBoost + huntBoost + agilityBoost - sleepiness * 1.1
         tailPhase += dt * tailSpeed
 
         // 8. Update per-keycap glows

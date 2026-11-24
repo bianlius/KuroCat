@@ -8,6 +8,9 @@ final class CatCanvasView: NSView {
 
     private var lastHoverCanvasPt: CGPoint?
     private var isDragging = false
+    private var activeResizeCorner: Int = -1 // -1 = none, 0=TL, 1=TR, 2=BL, 3=BR
+    private var resizeAnchorScreenPt: CGPoint = .zero
+    private var resizeStartFrame: CGRect = .zero
     private var dragStartScreenPt: CGPoint = .zero
     private var dragStartWindowOrigin: CGPoint = .zero
     private var isShowingOpenHand = false
@@ -48,13 +51,14 @@ final class CatCanvasView: NSView {
         let screenPt = NSEvent.mouseLocation
         let showPill = InputEngine.shared.status.needsAttention
 
-        if isDragging {
+        if isDragging || activeResizeCorner >= 0 {
             win.ignoresMouseEvents = false
             return
         }
 
         guard let pt = canvasPoint(fromScreenPoint: screenPt) else {
             lastHoverCanvasPt = nil
+            physics.updateTailHover(canvasPoint: nil)
             if !win.ignoresMouseEvents {
                 win.ignoresMouseEvents = true
             }
@@ -62,17 +66,41 @@ final class CatCanvasView: NSView {
             return
         }
 
-        let zone = CatRenderer.hitTest(point: pt, physics: physics, showPermissionPill: showPill)
+        if CatSettings.shared.isEditMode {
+            let editHit = CatRenderer.hitTestEditOverlay(point: pt)
+            win.ignoresMouseEvents = (editHit < 0)
+            if editHit == 10 || editHit == 11 {
+                NSCursor.pointingHand.set()
+                isShowingOpenHand = false
+            } else if editHit >= 0 && editHit <= 3 {
+                NSCursor.crosshair.set()
+                isShowingOpenHand = false
+            } else if editHit == 12 {
+                if !isShowingOpenHand {
+                    NSCursor.openHand.set()
+                    isShowingOpenHand = true
+                }
+            } else {
+                resetCursorIfNeeded()
+            }
+            return
+        }
+
+        let catPt = CatSettings.shared.flipHorizontal
+            ? CGPoint(x: CatPhysics.canvasSize.width - pt.x, y: pt.y)
+            : pt
+        let zone = CatRenderer.hitTest(point: catPt, physics: physics, showPermissionPill: showPill)
+        physics.updateTailHover(canvasPoint: catPt)
 
         // Petting triggers strictly on the cat's head (never on keyboard or torso)!
         if zone == .head {
             if let prev = lastHoverCanvasPt {
-                let delta = hypot(pt.x - prev.x, pt.y - prev.y)
+                let delta = hypot(catPt.x - prev.x, catPt.y - prev.y)
                 if delta > 1.2 && delta < 80 {
-                    physics.registerPetStroke(canvasPoint: pt, delta: delta, isHead: true)
+                    physics.registerPetStroke(canvasPoint: catPt, delta: delta, isHead: true)
                 }
             }
-            lastHoverCanvasPt = pt
+            lastHoverCanvasPt = catPt
         } else {
             lastHoverCanvasPt = nil
         }
@@ -115,9 +143,46 @@ final class CatCanvasView: NSView {
         let showPill = InputEngine.shared.status.needsAttention
 
         if let pt = canvasPoint(fromScreenPoint: screenPt) {
-            let zone = CatRenderer.hitTest(point: pt, physics: physics, showPermissionPill: showPill)
+            if CatSettings.shared.isEditMode {
+                let hit = CatRenderer.hitTestEditOverlay(point: pt)
+                if hit == 10 {
+                    CatSettings.shared.flipHorizontal.toggle()
+                    needsDisplay = true
+                    return
+                }
+                if hit == 11 {
+                    CatSettings.shared.isEditMode = false
+                    needsDisplay = true
+                    return
+                }
+                if hit >= 0 && hit <= 3 {
+                    activeResizeCorner = hit
+                    resizeStartFrame = win.frame
+                    // Anchor the opposite corner in screen space (AppKit Y is bottom-up)
+                    let f = win.frame
+                    switch hit {
+                    case 0: resizeAnchorScreenPt = CGPoint(x: f.maxX, y: f.minY) // dragging TL -> anchor BR
+                    case 1: resizeAnchorScreenPt = CGPoint(x: f.minX, y: f.minY) // dragging TR -> anchor BL
+                    case 2: resizeAnchorScreenPt = CGPoint(x: f.maxX, y: f.maxY) // dragging BL -> anchor TR
+                    default: resizeAnchorScreenPt = CGPoint(x: f.minX, y: f.maxY) // dragging BR -> anchor TL
+                    }
+                    return
+                }
+            }
+
+            let catPt = CatSettings.shared.flipHorizontal
+                ? CGPoint(x: CatPhysics.canvasSize.width - pt.x, y: pt.y)
+                : pt
+            let zone = CatRenderer.hitTest(point: catPt, physics: physics, showPermissionPill: showPill)
             if zone == .permissionPill {
                 onRequestPermission?()
+                return
+            }
+
+            // Double-clicking the cat toggles the interactive resize & flip box!
+            if event.clickCount == 2 && (zone == .head || zone == .body || CatSettings.shared.isEditMode) {
+                CatSettings.shared.isEditMode.toggle()
+                needsDisplay = true
                 return
             }
         }
@@ -129,8 +194,27 @@ final class CatCanvasView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard isDragging, let win = window else { return }
+        guard let win = window else { return }
         let currentScreenPt = NSEvent.mouseLocation
+        if activeResizeCorner >= 0 {
+            let dx = abs(currentScreenPt.x - resizeAnchorScreenPt.x)
+            let dy = abs(currentScreenPt.y - resizeAnchorScreenPt.y)
+            let sx = dx / CatPhysics.canvasSize.width
+            let sy = dy / CatPhysics.canvasSize.height
+            let newScale = max(0.45, min(2.50, max(sx, sy)))
+            let newW = CatPhysics.canvasSize.width * newScale
+            let newH = CatPhysics.canvasSize.height * newScale
+            let originX = (activeResizeCorner == 0 || activeResizeCorner == 2)
+                ? (resizeAnchorScreenPt.x - newW)
+                : resizeAnchorScreenPt.x
+            let originY = (activeResizeCorner == 2 || activeResizeCorner == 3)
+                ? (resizeAnchorScreenPt.y - newH)
+                : resizeAnchorScreenPt.y
+            CatSettings.shared.scale = newScale
+            win.setFrame(CGRect(x: originX, y: originY, width: newW, height: newH), display: true)
+            return
+        }
+        guard isDragging else { return }
         let newOrigin = CGPoint(
             x: dragStartWindowOrigin.x + (currentScreenPt.x - dragStartScreenPt.x),
             y: dragStartWindowOrigin.y + (currentScreenPt.y - dragStartScreenPt.y)
@@ -139,7 +223,14 @@ final class CatCanvasView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard isDragging, let win = window else { return }
+        guard let win = window else { return }
+        if activeResizeCorner >= 0 {
+            activeResizeCorner = -1
+            UserDefaults.standard.set(Double(win.frame.origin.x), forKey: "KuroCat.PosX")
+            UserDefaults.standard.set(Double(win.frame.origin.y), forKey: "KuroCat.PosY")
+            return
+        }
+        guard isDragging else { return }
         isDragging = false
         NSCursor.openHand.set()
         // Save position
@@ -180,10 +271,25 @@ final class OverlayWindow: NSPanel {
         ignoresMouseEvents = true
 
         applyWindowLevelAndBehavior()
+        applyOBSMode()
 
         catView.frame = CGRect(origin: .zero, size: size)
         catView.autoresizingMask = [.width, .height]
         contentView = catView
+    }
+
+    func applyOBSMode() {
+        let mode = CatSettings.shared.obsCaptureMode
+        title = "KuroCat"
+        sharingType = .readOnly
+        if mode == 2 {
+            isOpaque = true
+            backgroundColor = NSColor(calibratedRed: 0.0, green: 1.0, blue: 0.0, alpha: 1.0)
+        } else {
+            isOpaque = false
+            backgroundColor = .clear
+        }
+        catView.needsDisplay = true
     }
 
     func applyWindowLevelAndBehavior() {

@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <unordered_set>
+#include <unordered_map>
 #include <vector>
 #include <deque>
 #include <functional>
@@ -174,15 +175,18 @@ private:
     std::deque<double> recentKeyTimes_;
     std::unordered_set<PhysicalKey> rawKeys_;
     std::unordered_set<PhysicalKey> asyncKeys_;
+    std::unordered_map<PhysicalKey, double> rawKeyDownTime_;
     double lastRawKbTime_ = 0.0;
     double lastRawMouseTime_ = 0.0;
 
     void setRawKeyState(PhysicalKey key, bool isDown) {
         if (isDown) {
             rawKeys_.insert(key);
+            rawKeyDownTime_[key] = nowSeconds();
         } else {
             rawKeys_.erase(key);
             asyncKeys_.erase(key);
+            rawKeyDownTime_.erase(key);
         }
         recomputeUnifiedKeys(key);
     }
@@ -224,12 +228,20 @@ private:
             bool isDown = (GetAsyncKeyState(e.vk) & 0x8000) != 0;
             bool inRaw = rawKeys_.count(e.key) > 0;
             bool inAsync = asyncKeys_.count(e.key) > 0;
+            bool rawStale = false;
+            if (inRaw) {
+                auto it = rawKeyDownTime_.find(e.key);
+                rawStale = rawIdle || (it == rawKeyDownTime_.end()) || ((now - it->second) > 0.25);
+            }
             if (isDown && !inRaw && !inAsync) {
                 asyncKeys_.insert(e.key);
                 recomputeUnifiedKeys(e.key);
-            } else if (!isDown && (inAsync || (rawIdle && inRaw))) {
+            } else if (!isDown && (inAsync || rawStale)) {
                 asyncKeys_.erase(e.key);
-                if (rawIdle) rawKeys_.erase(e.key);
+                if (rawStale) {
+                    rawKeys_.erase(e.key);
+                    rawKeyDownTime_.erase(e.key);
+                }
                 recomputeUnifiedKeys(e.key);
             }
         }

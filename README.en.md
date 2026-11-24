@@ -29,6 +29,9 @@
   - Shake your mouse quickly and the cat's pupils dilate from slit pupils into huge round boba eyes with bright highlights—crouching low, wagging its tail faster, and locking onto the cursor without blinking.
 - **🐾 Fun Interactive Details**
   - **3-Key "Hind Paw Press"**: Hold 3 or more keys simultaneously and the cat lifts its hind paw to press the 3rd key!
+  - **4-Key "Tail Press"**: Hold exactly 4 keys and the tail curls over to press the 4th key!
+  - **Keyboard Marquee Backlight**: A comet-like chase light sweeps along the keyboard diagonal — the more keys you hold, the faster it runs and the longer its tail; the hue rotates once per sweep, reading like RGB backlight.
+  - Both easter eggs and the marquee have their own checkable on/off items in the right-click menu (persisted via Windows Registry / macOS UserDefaults / Linux config.ini).
   - **Head / Back Petting**: Gently stroke the cat's head with your cursor to trigger cozy closed eyes `— —` and shimmer particles; leave it idle and it falls asleep with floating `z`s.
   - **Smart Click-Through and Launch at Login**. Transparent areas pass clicks through automatically. You can enable **Full Click-Through (Gaming Anti-Misclick)** and **Launch at Login** on Windows, macOS, and Linux.
 - **🎨 4 Skins & Custom Color Combinations**

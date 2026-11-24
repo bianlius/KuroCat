@@ -46,6 +46,26 @@ enum CatRenderer {
     static let siameseWhisker  = NSColor(calibratedRed: 0.478, green: 0.388, blue: 0.325, alpha: 0.62) // #7A6353
 
     static let permissionPillRect = CGRect(x: 92, y: 294, width: 176, height: 22)
+    static let editFlipButtonRect = CGRect(x: 94, y: 12, width: 82, height: 24)
+    static let editDoneButtonRect = CGRect(x: 184, y: 12, width: 82, height: 24)
+    static let editCorners: [CGPoint] = [
+        CGPoint(x: 10, y: 10),   // 0: top-left
+        CGPoint(x: 350, y: 10),  // 1: top-right
+        CGPoint(x: 10, y: 310),  // 2: bottom-left
+        CGPoint(x: 350, y: 310)  // 3: bottom-right
+    ]
+
+    /// Edit-mode hit test in unflipped 360x320 canvas coordinates:
+    /// 0..3 = corner resize handles, 10 = flip button, 11 = done button, 12 = inside edit box, -1 = outside.
+    static func hitTestEditOverlay(point p: CGPoint) -> Int {
+        if editFlipButtonRect.insetBy(dx: -2, dy: -2).contains(p) { return 10 }
+        if editDoneButtonRect.insetBy(dx: -2, dy: -2).contains(p) { return 11 }
+        for (idx, c) in editCorners.enumerated() {
+            if hypot(p.x - c.x, p.y - c.y) <= 18.0 { return idx }
+        }
+        if CGRect(x: 6, y: 6, width: 348, height: 308).contains(p) { return 12 }
+        return -1
+    }
 
     /// Hit test in 360x320 logical canvas coordinates for smart click-through & petting.
     static func hitTest(point p: CGPoint, physics: CatPhysics, showPermissionPill: Bool) -> CatHitZone {
@@ -94,13 +114,23 @@ enum CatRenderer {
         ctx.setShouldAntialias(true)
 
         let settings = CatSettings.shared
+        if settings.obsCaptureMode == 2 {
+            ctx.setFillColor(NSColor(calibratedRed: 0.0, green: 1.0, blue: 0.0, alpha: 1.0).cgColor)
+            ctx.fill(CGRect(origin: .zero, size: CatPhysics.canvasSize))
+        }
+        let flipped = settings.flipHorizontal
+        if flipped {
+            ctx.saveGState()
+            ctx.translateBy(x: CatPhysics.canvasSize.width, y: 0)
+            ctx.scaleBy(x: -1, y: 1)
+        }
         let coat = settings.coatTheme
 
         // 1. Mini White Mouse (left of keyboard)
         drawMouse(in: ctx, physics: physics, theme: settings.keyboardTheme)
 
         // 2. Mini Angled 65% Mechanical Keyboard + Dynamic Keycap Glow
-        let keyboardDeck = drawKeyboard(in: ctx, physics: physics, theme: settings.keyboardTheme, eyeTheme: settings.eyeTheme, showLegends: settings.showKeyLegends)
+        let keyboardDeck = drawKeyboard(in: ctx, physics: physics, theme: settings.keyboardTheme, eyeTheme: settings.eyeTheme, showLegends: settings.showKeyLegends, marquee: settings.keyboardMarquee)
 
         if coat == .doraemon, let renderer = DoraemonRenderer.bundled {
             renderer.draw(in: ctx, physics: physics, eyeColor: settings.eyeTheme.primaryColor.cgColor, keyboardDeck: keyboardDeck)
@@ -116,7 +146,16 @@ enum CatRenderer {
         // 9. Subtle Petting Sparkles / Sleep Z
         drawSparkles(in: ctx, physics: physics, eyeTheme: settings.eyeTheme)
 
-        // 10. Optional non-intrusive Permission Pill if global monitoring not yet granted
+        if flipped {
+            ctx.restoreGState()
+        }
+
+        // 10. Interactive Resize & Flip Edit Box (drawn unflipped on top)
+        if settings.isEditMode {
+            drawEditOverlay(in: ctx, isEnglish: settings.isEnglish, scale: settings.scale)
+        }
+
+        // 11. Optional non-intrusive Permission Pill if global monitoring not yet granted
         if showPermissionPill {
             drawPermissionPill(in: ctx, text: permissionPillText)
         }
@@ -129,8 +168,9 @@ enum CatRenderer {
         let seatX = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
         let seatY = CatPhysics.seatAnchor.y
 
-        // 3. Cat Tail (behind body)
-        drawTail(in: ctx, seatX: seatX, seatY: seatY, physics: physics, coat: coat)
+        if physics.tailTyping.value < 0.5 {
+            drawTail(in: ctx, seatX: seatX, seatY: seatY, physics: physics, coat: coat)
+        }
 
         // 4. 3D-Projected Ears (behind crown silhouette so Siamese seal-point ears emerge cleanly from cream skull!)
         let siameseLift: CGFloat = (coat == .siamese) ? -3.0 : 0.0
@@ -161,6 +201,82 @@ enum CatRenderer {
 
         // 8. Front Arms / Paws (over torso & keyboard/mouse with crisp separation outlines / Siamese chocolate socks!)
         drawFrontPaws(in: ctx, seatX: seatX, seatY: seatY, breath: breath, physics: physics, coat: coat)
+        if physics.tailTyping.value >= 0.5 {
+            drawTail(in: ctx, seatX: seatX, seatY: seatY, physics: physics, coat: coat)
+        }
+    }
+
+    private static func drawEditOverlay(in ctx: CGContext, isEnglish: Bool, scale: CGFloat) {
+        ctx.saveGState()
+        let boxRect = CGRect(x: 10, y: 10, width: 340, height: 300)
+        let boxPath = CGPath(roundedRect: boxRect, cornerWidth: 12, cornerHeight: 12, transform: nil)
+
+        ctx.setFillColor(NSColor(calibratedRed: 0.16, green: 0.56, blue: 0.98, alpha: 0.07).cgColor)
+        ctx.addPath(boxPath)
+        ctx.fillPath()
+
+        ctx.setStrokeColor(NSColor(calibratedRed: 0.20, green: 0.62, blue: 1.0, alpha: 0.92).cgColor)
+        ctx.setLineWidth(1.8)
+        ctx.setLineDash(phase: 0, lengths: [6, 4])
+        ctx.addPath(boxPath)
+        ctx.strokePath()
+        ctx.setLineDash(phase: 0, lengths: [])
+
+        for c in editCorners {
+            let r: CGFloat = 6.5
+            let hRect = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
+            ctx.setFillColor(NSColor.white.cgColor)
+            ctx.fillEllipse(in: hRect)
+            ctx.setStrokeColor(NSColor(calibratedRed: 0.14, green: 0.52, blue: 0.96, alpha: 1.0).cgColor)
+            ctx.setLineWidth(2.0)
+            ctx.strokeEllipse(in: hRect)
+        }
+
+        func drawBtn(_ rect: CGRect, title: String, primary: Bool) {
+            let p = CGPath(roundedRect: rect, cornerWidth: 11, cornerHeight: 11, transform: nil)
+            let fill = primary
+                ? NSColor(calibratedRed: 0.16, green: 0.54, blue: 0.96, alpha: 0.95)
+                : NSColor(calibratedRed: 0.14, green: 0.15, blue: 0.19, alpha: 0.88)
+            ctx.setFillColor(fill.cgColor)
+            ctx.addPath(p)
+            ctx.fillPath()
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: 0.28).cgColor)
+            ctx.setLineWidth(0.9)
+            ctx.addPath(p)
+            ctx.strokePath()
+
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
+                .foregroundColor: NSColor.white
+            ]
+            let ns = NSAttributedString(string: title, attributes: attrs)
+            let sz = ns.size()
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+            ns.draw(at: CGPoint(x: rect.midX - sz.width * 0.5, y: rect.midY - sz.height * 0.5))
+            NSGraphicsContext.restoreGraphicsState()
+        }
+
+        drawBtn(editFlipButtonRect, title: isEnglish ? "⇄ Flip" : "⇄ 翻转", primary: false)
+        drawBtn(editDoneButtonRect, title: isEnglish ? "✓ Done" : "✓ 完成", primary: true)
+
+        let scaleStr = String(format: "%.0f%%", scale * 100)
+        let sAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .semibold),
+            .foregroundColor: NSColor.white
+        ]
+        let sns = NSAttributedString(string: scaleStr, attributes: sAttrs)
+        let ssz = sns.size()
+        let pill = CGRect(x: 180 - (ssz.width + 12) * 0.5, y: 298 - (ssz.height + 4) * 0.5, width: ssz.width + 12, height: ssz.height + 4)
+        ctx.setFillColor(NSColor(calibratedRed: 0.12, green: 0.13, blue: 0.16, alpha: 0.82).cgColor)
+        ctx.addPath(CGPath(roundedRect: pill, cornerWidth: 6, cornerHeight: 6, transform: nil))
+        ctx.fillPath()
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        sns.draw(at: CGPoint(x: pill.midX - ssz.width * 0.5, y: pill.midY - ssz.height * 0.5))
+        NSGraphicsContext.restoreGraphicsState()
+
+        ctx.restoreGState()
     }
 
     // MARK: - Mini White Mouse
@@ -252,7 +368,8 @@ enum CatRenderer {
         physics: CatPhysics,
         theme: KeyboardTheme,
         eyeTheme: EyeColorTheme,
-        showLegends: Bool
+        showLegends: Bool,
+        marquee: Bool
     ) -> CGPath {
         let tl = KeyboardLayout.screenQuadPoint(su: -0.012, sv: -0.04)
         let tr = KeyboardLayout.screenQuadPoint(su: 1.012, sv: -0.04)
@@ -319,6 +436,43 @@ enum CatRenderer {
         ctx.addPath(topChassis)
         ctx.fillPath()
 
+        // Keyboard marquee backlight: a comet of light sweeps diagonally under the keycaps
+        // (bright head, long fading tail, one full hue cycle per sweep so the deck reads as RGB).
+        let mqHead = physics.marqueePhase.truncatingRemainder(dividingBy: 1.0)
+        let mqCol = hsvColor(hue: mqHead + 0.52, saturation: 0.55, value: 1.0)
+        let bandDx = br.x - tl.x, bandDy = br.y - tl.y
+        let bandLen2 = bandDx * bandDx + bandDy * bandDy
+        func mqWave(_ t: CGFloat) -> CGFloat {
+            guard marquee else { return 0 }
+            var d = mqHead - t
+            if d < 0 { d += 1 }
+            return CGFloat(exp(-Double(d / 0.125)))
+        }
+        if marquee {
+            ctx.saveGState()
+            ctx.addPath(topChassis)
+            ctx.clip()
+            let stopCount = 24
+            var mqColors: [CGColor] = []
+            var mqPos: [CGFloat] = []
+            for i in 0..<stopCount {
+                let t = CGFloat(i) / CGFloat(stopCount - 1)
+                mqPos.append(t)
+                mqColors.append(mqCol.withAlphaComponent(min(1.0, mqWave(t) * 200.0 / 255.0)).cgColor)
+            }
+            if let band = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                     colors: mqColors as CFArray, locations: mqPos) {
+                ctx.drawLinearGradient(band, start: tl, end: br,
+                                       options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            }
+            // White-hot lamp at the head of the comet.
+            let head = CGPoint(x: tl.x + bandDx * mqHead, y: tl.y + bandDy * mqHead)
+            drawRadialGlow(in: ctx, center: head, radius: 44.0,
+                           color: NSColor(calibratedRed: 240.0/255.0, green: 252.0/255.0,
+                                          blue: 1.0, alpha: 150.0/255.0))
+            ctx.restoreGState()
+        }
+
         // Individual keycaps — tight clean mechanical spacing matching the reference video
         let padU: CGFloat = 0.0028
         let padV: CGFloat = 0.014
@@ -340,7 +494,18 @@ enum CatRenderer {
 
             let kPath = roundedQuadPath(tl: kTL, tr: kTR, br: kBR, bl: kBL, radius: 1.6)
 
+            // Where this keycap sits along the marquee axis, and how bright the comet makes it.
+            let kcx = (kTL.x + kTR.x + kBR.x + kBL.x) * 0.25
+            let kcy = (kTL.y + kTR.y + kBR.y + kBL.y) * 0.25
+            let kt = max(0, min(1, ((kcx - tl.x) * bandDx + (kcy - tl.y) * bandDy) / bandLen2))
+            let mq = mqWave(kt)
+
             var fill = cap.isAmberAccent ? accentColor : keyColor
+            if mq > 0.015 {
+                // Head of the comet reads hot (near white), the trailing keys stay saturated.
+                let lit = blendColor(mqCol, .white, t: mq * mq * 0.5)
+                fill = blendColor(fill, lit, t: max(0, min(0.9, mq * 0.88)))
+            }
             if glow > 0.02 {
                 fill = blendColor(fill, glowBaseColor, t: glow * 0.55)
             }
@@ -349,10 +514,28 @@ enum CatRenderer {
             ctx.addPath(kPath)
             ctx.fillPath()
 
-            ctx.setStrokeColor(keyBorderColor.cgColor)
-            ctx.setLineWidth(0.65)
-            ctx.addPath(kPath)
-            ctx.strokePath()
+            if mq > 0.10 {
+                ctx.setStrokeColor(mqCol.withAlphaComponent(min(1.0, mq * 215.0 / 255.0)).cgColor)
+                ctx.setLineWidth(1.0)
+                ctx.addPath(kPath)
+                ctx.strokePath()
+            } else {
+                ctx.setStrokeColor(keyBorderColor.cgColor)
+                ctx.setLineWidth(0.65)
+                ctx.addPath(kPath)
+                ctx.strokePath()
+            }
+
+            // Under-key bloom where the beam is hottest, so the light spills between caps.
+            if mq > 0.45 {
+                let bloom = (mq - 0.45) / 0.55
+                ctx.saveGState()
+                ctx.translateBy(x: kcx, y: kcy)
+                ctx.scaleBy(x: 15.0, y: 10.5)
+                drawRadialGlow(in: ctx, center: .zero, radius: 1.0,
+                               color: mqCol.withAlphaComponent(min(1.0, bloom * 135.0 / 255.0)))
+                ctx.restoreGState()
+            }
 
             if showLegends {
                 let isSpace = cap.key == .space
@@ -385,6 +568,9 @@ enum CatRenderer {
                     ctx.translateBy(x: cx, y: cy)
                     // Keyboard faces the cat (180°), so legends read upright from the cat's seat.
                     ctx.rotate(by: .pi + 0.052)
+                    if CatSettings.shared.flipHorizontal {
+                        ctx.scaleBy(x: -1, y: 1)
+                    }
                     NSGraphicsContext.saveGraphicsState()
                     NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
                     str.draw(at: CGPoint(x: -sz.width * 0.5, y: -sz.height * 0.5))
@@ -412,16 +598,25 @@ enum CatRenderer {
     private static func drawTail(in ctx: CGContext, seatX: CGFloat, seatY: CGFloat, physics: CatPhysics, coat: CatCoatTheme) {
         let p = physics.tailPhase
         let hunt = max(0, min(1, physics.huntIntensity.value))
-        let wag1 = sin(p) * (8.0 + hunt * 5.5)
-        let wag2 = cos(p * 1.3) * (6.0 + hunt * 4.5)
+        let agility = max(0, min(1, physics.tailAgility.value))
+        let wag1 = sin(p) * (8.0 + hunt * 5.5 + agility * 4.0)
+        let wag2 = cos(p * 1.3) * (6.0 + hunt * 4.5 + agility * 3.5)
         // Tail drops lower & swishes tautly when stalking/hunting!
         let huntDrop = hunt * 14.0
 
         // Signature low sweep out to the right, then playful upward curl at the tip!
         let root = CGPoint(x: seatX + 34, y: seatY - 6)
-        let c1 = CGPoint(x: seatX + 64, y: seatY + 2 + wag1 * 0.35 + huntDrop * 0.4)
-        let c2 = CGPoint(x: seatX + 66 + wag2 * 0.4, y: seatY - 26 + wag1 * 0.7 + huntDrop)
-        let tip = CGPoint(x: seatX + 91 + wag2 * 0.5, y: seatY - 30 + wag1 * 0.85 + huntDrop)
+        let reach = max(0, min(1, physics.tailTyping.value))
+        let target = physics.tailTip.point
+        let flickScale = 1.0 - reach
+        let fx = physics.tailFlick.point.x * flickScale
+        let fy = physics.tailFlick.point.y * flickScale
+        let curl = physics.tailCurl.value * flickScale
+        let c1 = CGPoint(x: seatX + 64 + 12 * reach + fx * 0.25, y: seatY + 2 + wag1 * 0.35 + huntDrop * 0.4 - 18 * reach + fy * 0.22 + curl * 0.35)
+        let idleC2 = CGPoint(x: seatX + 66 + wag2 * 0.4 + fx * 0.65 - curl * 0.45, y: seatY - 26 + wag1 * 0.7 + huntDrop + fy * 0.60 - curl * 0.55)
+        let idleTip = CGPoint(x: seatX + 91 + wag2 * 0.5 + fx, y: seatY - 30 + wag1 * 0.85 + huntDrop + fy)
+        let c2 = CGPoint(x: idleC2.x + (target.x + 24 - idleC2.x) * reach, y: idleC2.y + (target.y - 30 - idleC2.y) * reach)
+        let tip = CGPoint(x: idleTip.x + (target.x - idleTip.x) * reach, y: idleTip.y + (target.y - idleTip.y) * reach)
 
         ctx.saveGState()
         let tailColor = earTailColor(coat)
@@ -533,6 +728,16 @@ enum CatRenderer {
             ctx.setFillColor(bodyColor(coat).cgColor)
             ctx.addPath(path)
             ctx.fillPath()
+            if coat == .orangeWhite {
+                // Overlap the matching fur colors at the ear/crown join so the
+                // white torso underpaint cannot leave an antialiased seam.
+                let join = CGMutablePath()
+                join.move(to: lCheek)
+                join.addCurve(to: crown, control1: H(leftCheekX - 1.5, -14), control2: H(-26 + cheekShift * 0.3, -30 + crownDrop))
+                join.addCurve(to: rCheek, control1: H(26 + cheekShift * 0.3, -30 + crownDrop), control2: H(rightCheekX + 1.5, -14))
+                ctx.setStrokeColor(earTailColor(coat).cgColor); ctx.setLineWidth(1.0); ctx.setLineCap(.round)
+                ctx.addPath(join); ctx.strokePath()
+            }
             if patterned(coat) {
                 ctx.saveGState(); ctx.addPath(path); ctx.clip()
                 drawCoatMarks(in: ctx, seatX: seatX, seatY: seatY, head: headCenter, physics: physics, coat: coat)
@@ -654,10 +859,13 @@ enum CatRenderer {
     }
 
     private static func coatMarkPoint(_ p: CGPoint, headSurface: Bool, skull: Bool, coat: CatCoatTheme, seatX: CGFloat, seatY: CGFloat,
-                                      head: CGPoint, physics: CatPhysics) -> CGPoint {
+                                      head: CGPoint, physics: CatPhysics, whiteSurface: Bool = false) -> CGPoint {
         if headSurface {
-            let depth: CGFloat = coat == .orangeWhite
-                ? 29.6 * sqrt(max(0, 1 - pow(p.x / 46, 2) - pow(p.y / 40, 2))) : 27.5
+            let radius = max(0, 1 - pow(p.x / 46, 2) - pow(p.y / 40, 2))
+            // A zero-slope depth at the cheek rim keeps the white contour from
+            // folding into a tip as it turns. Other coat patterns stay unchanged.
+            let surface = whiteSurface ? radius * radius * (3 - 2 * radius) : sqrt(radius)
+            let depth: CGFloat = coat == .orangeWhite ? 29.6 * surface : 27.5
             let projected = skull ? p : projectHead3D(x: p.x, y: p.y, z: depth,
                                           yawRad: physics.headYaw.value * 0.50,
                                           pitchRad: physics.headPitch.value * 0.36).pt
@@ -673,17 +881,29 @@ enum CatRenderer {
     private static func drawCoatMarks(in ctx: CGContext, seatX: CGFloat, seatY: CGFloat,
                                       head: CGPoint, physics: CatPhysics, coat: CatCoatTheme) {
         let marks = CoatPatterns.marks(for: coat)
+        let overlap = min(1, abs(physics.headYaw.value) * max(0, physics.headPitch.value))
+        let coverage = overlap * overlap * (3 - 2 * overlap)
         func markPath(_ mark: CoatMark) -> CGMutablePath {
             let path = CGMutablePath()
             for (i, point) in mark.points.enumerated() {
-                let p = coatMarkPoint(point, headSurface: mark.head, skull: mark.skull, coat: coat, seatX: seatX, seatY: seatY, head: head, physics: physics)
+                var local = point
+                if mark.clipToBib {
+                    let lowerRim = min(1, max(0, (point.y - 20) / 6))
+                    local.x *= 1 - 0.5 * lowerRim * (1 - coverage)
+                    if point.y > 20 { local.y = 20 + (point.y - 20) * (0.75 + 0.25 * coverage) }
+                }
+                let p = coatMarkPoint(local, headSurface: mark.head, skull: mark.skull, coat: coat, seatX: seatX, seatY: seatY, head: head, physics: physics, whiteSurface: mark.rgb == 0xF2EEE4)
                 if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
             }
             if mark.width == 0 { path.closeSubpath() }
             return path
         }
+        let bib = marks.first { $0.head && !$0.skull && $0.rgb == 0xF2EEE4 && $0.points.contains { abs($0.x) > 46 } }
         for mark in marks {
+            // No extra white coverage in the front view or while looking up.
+            if mark.clipToBib && coverage == 0 { continue }
             ctx.saveGState()
+            if mark.clipToBib, let bib = bib { ctx.addPath(markPath(bib)); ctx.clip() }
             let path = markPath(mark)
             let color = rgb(mark.rgb, mark.alpha)
             if mark.width == 0 {
@@ -694,6 +914,7 @@ enum CatRenderer {
             }
             ctx.restoreGState()
         }
+
     }
 
     // MARK: - 3rd Key Hind Foot Easter Egg
@@ -804,20 +1025,135 @@ enum CatRenderer {
             ctx.setFillColor(NSColor(calibratedRed: 0.14, green: 0.09, blue: 0.08, alpha: 0.95).cgColor)
             ctx.addPath(nPath)
             ctx.fillPath()
-            // Delicate light-mocha `ω` kitty mouth
-            ctx.setStrokeColor(NSColor(calibratedRed: 0.78, green: 0.66, blue: 0.56, alpha: 0.55).cgColor)
-            ctx.setLineWidth(1.05)
-            ctx.setLineCap(.round)
-            ctx.move(to: mouthL)
-            ctx.addQuadCurve(to: mouthM, control: CGPoint(x: (mouthL.x + mouthM.x) * 0.5, y: mouthL.y + 1.6))
-            ctx.addQuadCurve(to: mouthR, control: CGPoint(x: (mouthM.x + mouthR.x) * 0.5, y: mouthR.y + 1.6))
-            ctx.strokePath()
+            // Delicate light-mocha `ω` kitty mouth (hidden while mouth is open yawning)
+            if physics.yawnAmount < 0.15 {
+                ctx.setStrokeColor(NSColor(calibratedRed: 0.78, green: 0.66, blue: 0.56, alpha: 0.55).cgColor)
+                ctx.setLineWidth(1.05)
+                ctx.setLineCap(.round)
+                ctx.move(to: mouthL)
+                ctx.addQuadCurve(to: mouthM, control: CGPoint(x: (mouthL.x + mouthM.x) * 0.5, y: mouthL.y + 1.6))
+                ctx.addQuadCurve(to: mouthR, control: CGPoint(x: (mouthM.x + mouthR.x) * 0.5, y: mouthR.y + 1.6))
+                ctx.strokePath()
+            }
             ctx.restoreGState()
+        }
+
+        if patterned(coat) { drawPatternedMuzzle(in: ctx, yawRad: yawRad, pitchRad: pitchRad) }
+        if physics.yawnAmount > 0.03 {
+            drawYawnMouth(in: ctx, yawRad: yawRad, pitchRad: pitchRad, yawn: physics.yawnAmount, coat: coat)
         }
 
         // 2. 3D-Projected Whiskers (outer-side whiskers poke out past silhouette when turning!)
         drawWhiskers3D(in: ctx, yawRad: yawRad, pitchRad: pitchRad, physics: physics, coat: coat)
 
+        ctx.restoreGState()
+    }
+
+    private static func drawYawnMouth(in ctx: CGContext, yawRad: CGFloat, pitchRad: CGFloat, yawn: CGFloat, coat: CatCoatTheme) {
+        let y = max(0, min(1, yawn))
+        let center = projectHead3D(x: 0, y: 16.2 + y * 2.2, z: 30.2, yawRad: yawRad, pitchRad: pitchRad).pt
+        let rx = 3.2 + y * 5.8
+        let ry = 1.6 + y * 7.4
+
+        ctx.saveGState()
+        ctx.translateBy(x: center.x, y: center.y)
+
+        let mouth = CGMutablePath()
+        mouth.move(to: CGPoint(x: 0, y: -ry * 0.92))
+        mouth.addCurve(to: CGPoint(x: rx, y: ry * 0.08), control1: CGPoint(x: rx * 0.68, y: -ry * 0.92), control2: CGPoint(x: rx * 1.05, y: -ry * 0.42))
+        mouth.addCurve(to: CGPoint(x: 0, y: ry), control1: CGPoint(x: rx * 0.95, y: ry * 0.72), control2: CGPoint(x: rx * 0.50, y: ry))
+        mouth.addCurve(to: CGPoint(x: -rx, y: ry * 0.08), control1: CGPoint(x: -rx * 0.50, y: ry), control2: CGPoint(x: -rx * 0.95, y: ry * 0.72))
+        mouth.addCurve(to: CGPoint(x: 0, y: -ry * 0.92), control1: CGPoint(x: -rx * 1.05, y: -ry * 0.42), control2: CGPoint(x: -rx * 0.68, y: -ry * 0.92))
+        mouth.closeSubpath()
+
+        ctx.setFillColor(NSColor(calibratedRed: 0.78, green: 0.19, blue: 0.25, alpha: 0.98).cgColor)
+        ctx.addPath(mouth)
+        ctx.fillPath()
+
+        ctx.saveGState()
+        ctx.addPath(mouth)
+        ctx.clip()
+
+        ctx.setFillColor(NSColor(calibratedRed: 0.55, green: 0.10, blue: 0.16, alpha: 0.55).cgColor)
+        ctx.fillEllipse(in: CGRect(x: -rx * 0.65, y: -ry * 0.72, width: rx * 1.30, height: ry * 0.92))
+
+        if y > 0.22 {
+            let tAlpha = min(1.0, (y - 0.22) / 0.35)
+            ctx.setFillColor(NSColor(calibratedRed: 0.95, green: 0.48, blue: 0.55, alpha: 0.92 * tAlpha).cgColor)
+            let tongue = CGMutablePath()
+            tongue.move(to: CGPoint(x: -rx * 0.62, y: ry * 0.55))
+            tongue.addQuadCurve(to: CGPoint(x: 0, y: ry * 0.36), control: CGPoint(x: -rx * 0.32, y: ry * 0.16))
+            tongue.addQuadCurve(to: CGPoint(x: rx * 0.62, y: ry * 0.55), control: CGPoint(x: rx * 0.32, y: ry * 0.16))
+            tongue.addQuadCurve(to: CGPoint(x: -rx * 0.62, y: ry * 0.55), control: CGPoint(x: 0, y: ry * 1.25))
+            tongue.closeSubpath()
+            ctx.addPath(tongue)
+            ctx.fillPath()
+        }
+
+        if y > 0.28 {
+            let fScale = min(1.0, (y - 0.28) / 0.32)
+            ctx.setFillColor(NSColor(calibratedRed: 1.0, green: 0.99, blue: 0.96, alpha: 0.98).cgColor)
+            let upperBaseY = -ry * 0.80
+            let upperLen = (2.6 + y * 2.2) * fScale
+            let upperHalfW = (1.15 + y * 0.55) * fScale
+            for sign: CGFloat in [-1, 1] {
+                let fx = sign * rx * 0.46
+                let fang = CGMutablePath()
+                fang.move(to: CGPoint(x: fx - upperHalfW, y: upperBaseY - 0.8))
+                fang.addLine(to: CGPoint(x: fx + upperHalfW, y: upperBaseY - 0.8))
+                fang.addQuadCurve(to: CGPoint(x: fx - sign * 0.25, y: upperBaseY + upperLen), control: CGPoint(x: fx + upperHalfW * 0.45, y: upperBaseY + upperLen * 0.62))
+                fang.addQuadCurve(to: CGPoint(x: fx - upperHalfW, y: upperBaseY - 0.8), control: CGPoint(x: fx - upperHalfW * 0.45, y: upperBaseY + upperLen * 0.62))
+                fang.closeSubpath()
+                ctx.addPath(fang)
+                ctx.fillPath()
+            }
+            let lowerBaseY = ry * 0.84
+            let lowerLen = (1.6 + y * 1.3) * fScale
+            let lowerHalfW = (0.85 + y * 0.35) * fScale
+            for sign: CGFloat in [-1, 1] {
+                let fx = sign * rx * 0.36
+                let fang = CGMutablePath()
+                fang.move(to: CGPoint(x: fx - lowerHalfW, y: lowerBaseY + 0.8))
+                fang.addLine(to: CGPoint(x: fx + lowerHalfW, y: lowerBaseY + 0.8))
+                fang.addQuadCurve(to: CGPoint(x: fx - sign * 0.15, y: lowerBaseY - lowerLen), control: CGPoint(x: fx + lowerHalfW * 0.4, y: lowerBaseY - lowerLen * 0.55))
+                fang.addQuadCurve(to: CGPoint(x: fx - lowerHalfW, y: lowerBaseY + 0.8), control: CGPoint(x: fx - lowerHalfW * 0.4, y: lowerBaseY - lowerLen * 0.55))
+                fang.closeSubpath()
+                ctx.addPath(fang)
+                ctx.fillPath()
+            }
+        }
+        ctx.restoreGState()
+
+        let rimColor: NSColor = (coat == .classicBlack || coat == .siamese)
+            ? NSColor(calibratedRed: 0.42, green: 0.08, blue: 0.12, alpha: 0.85)
+            : NSColor(calibratedRed: 0.56, green: 0.22, blue: 0.26, alpha: 0.72)
+        ctx.setStrokeColor(rimColor.cgColor)
+        ctx.setLineWidth(1.0)
+        ctx.addPath(mouth)
+        ctx.strokePath()
+
+        ctx.restoreGState()
+    }
+
+    // Small opaque nose and soft mouth on the existing white muzzle, below whiskers.
+    // All control points share the head's yaw/pitch projection; the caller applies roll.
+    private static func drawPatternedMuzzle(in ctx: CGContext, yawRad: CGFloat, pitchRad: CGFloat) {
+        let local: [CGPoint] = [CGPoint(x: -2.9, y: 8.5), CGPoint(x: -1.8, y: 8.1), CGPoint(x: 1.8, y: 8.1), CGPoint(x: 2.9, y: 8.5), CGPoint(x: 3.2, y: 8.9), CGPoint(x: 0.8, y: 12.1), CGPoint(x: 0, y: 12.3), CGPoint(x: -0.8, y: 12.1), CGPoint(x: -3.2, y: 8.9), CGPoint(x: -2.9, y: 8.5), CGPoint(x: -5.9, y: 14.4), CGPoint(x: -4.7, y: 18), CGPoint(x: -1.4, y: 18), CGPoint(x: 0, y: 14.3), CGPoint(x: 1.4, y: 18), CGPoint(x: 4.7, y: 18), CGPoint(x: 5.9, y: 14.4), CGPoint(x: 0, y: 12.0)]
+        let p = local.map { projectHead3D(x: $0.x, y: $0.y, z: 30, yawRad: yawRad, pitchRad: pitchRad).pt }
+        ctx.saveGState()
+        let nose = CGMutablePath()
+        nose.move(to: p[0])
+        nose.addCurve(to: p[3], control1: p[1], control2: p[2])
+        nose.addCurve(to: p[6], control1: p[4], control2: p[5])
+        nose.addCurve(to: p[9], control1: p[7], control2: p[8])
+        nose.closeSubpath()
+        ctx.setFillColor(rgb(0xD98F9B).cgColor)
+        ctx.addPath(nose); ctx.fillPath()
+        ctx.setStrokeColor(rgb(0x8B8C86, 0.78).cgColor)
+        ctx.setLineWidth(1.15); ctx.setLineCap(.round); ctx.setLineJoin(.round)
+        ctx.move(to: p[17]); ctx.addLine(to: p[13])
+        ctx.move(to: p[10]); ctx.addCurve(to: p[13], control1: p[11], control2: p[12])
+        ctx.addCurve(to: p[16], control1: p[14], control2: p[15]); ctx.strokePath()
         ctx.restoreGState()
     }
 
@@ -1250,17 +1586,9 @@ enum CatRenderer {
 
         ctx.saveGState()
         if coat != .siamese {
-            ctx.setFillColor(limbColor(coat).cgColor)
+            ctx.setFillColor((patterned(coat) ? pawColor(coat) : limbColor(coat)).cgColor)
             ctx.addPath(limbPath)
-            if patterned(coat) {
-                ctx.saveGState(); ctx.clip()
-                let colors = [pawColor(coat).cgColor, limbColor(coat).cgColor] as CFArray
-                if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 0.30]) {
-                    ctx.drawLinearGradient(gradient, start: start, end: end,
-                                           options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
-                }
-                ctx.restoreGState()
-            } else { ctx.fillPath() }
+            ctx.fillPath()
             if !patterned(coat) { ctx.fillEllipse(in: pawRect) }
             if patterned(coat) {
                 let cuff = CGMutablePath()
@@ -1363,7 +1691,7 @@ enum CatRenderer {
             ctx.setAlpha(alpha)
             ctx.translateBy(x: badge.position.x, y: badge.position.y)
             ctx.rotate(by: badge.rotation)
-            ctx.scaleBy(x: scale, y: scale)
+            ctx.scaleBy(x: CatSettings.shared.flipHorizontal ? -scale : scale, y: scale)
 
             // 3D bottom keycap edge / shadow
             let baseRect = CGRect(x: -w * 0.5, y: -h * 0.5 + 2.5, width: w, height: h)
@@ -1512,6 +1840,25 @@ enum CatRenderer {
         p.addArc(tangent1End: tl, tangent2End: tr, radius: radius)
         p.closeSubpath()
         return p
+    }
+
+    /// HSV → RGB, used by the keyboard marquee for its one-hue-cycle-per-sweep backlight.
+    private static func hsvColor(hue h: CGFloat, saturation s: CGFloat, value v: CGFloat) -> NSColor {
+        var hue = h.truncatingRemainder(dividingBy: 1.0)
+        if hue < 0 { hue += 1 }
+        let c = v * s
+        let x = c * (1 - abs((hue * 6.0).truncatingRemainder(dividingBy: 2.0) - 1))
+        let m = v - c
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
+        switch Int(hue * 6.0) % 6 {
+        case 0: r = c; g = x
+        case 1: r = x; g = c
+        case 2: g = c; b = x
+        case 3: g = x; b = c
+        case 4: r = x; b = c
+        default: r = c; b = x
+        }
+        return NSColor(calibratedRed: r + m, green: g + m, blue: b + m, alpha: 1.0)
     }
 
     private static func blendColor(_ a: NSColor, _ b: NSColor, t: CGFloat) -> NSColor {

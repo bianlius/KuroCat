@@ -94,7 +94,18 @@ public:
         }
 
         for (const auto& e : batch) {
-            if (e.isMouseBtn) {
+            if (e.isResetKeys) {
+                if (!activeKeys.empty() && (nowSeconds() - lastKeyActivityTime > 0.30)) {
+                    auto prev = activeKeys;
+                    evdevKeys_.clear();
+                    xi2Keys_.clear();
+                    activeKeys.clear();
+                    pressedOrder.clear();
+                    for (PhysicalKey k : prev) {
+                        if (onKeyUp) onKeyUp(k);
+                    }
+                }
+            } else if (e.isMouseBtn) {
                 updateMouseButton(e.mouseButton, e.isDown);
             } else {
                 setKeyState(e.key, e.isDown, e.fromEvdev);
@@ -150,6 +161,7 @@ private:
         bool isMouseBtn = false;
         bool fromEvdev = false;
         bool isDown = false;
+        bool isResetKeys = false;
         int mouseButton = 0;
         PhysicalKey key = PhysicalKey::None;
     };
@@ -174,12 +186,17 @@ private:
     void pushKey(PhysicalKey k, bool isDown, bool fromEvdev) {
         if (k == PhysicalKey::None) return;
         std::lock_guard<std::mutex> lk(mu_);
-        queue_.push_back({ false, fromEvdev, isDown, 0, k });
+        queue_.push_back({ false, fromEvdev, isDown, false, 0, k });
     }
 
     void pushMouseBtn(int btn, bool isDown, bool fromEvdev) {
         std::lock_guard<std::mutex> lk(mu_);
-        queue_.push_back({ true, fromEvdev, isDown, btn, PhysicalKey::None });
+        queue_.push_back({ true, fromEvdev, isDown, false, btn, PhysicalKey::None });
+    }
+
+    void pushResetKeys() {
+        std::lock_guard<std::mutex> lk(mu_);
+        queue_.push_back({ false, false, false, true, 0, PhysicalKey::None });
     }
 
     void setKeyState(PhysicalKey key, bool isDown, bool fromEvdev) {
@@ -189,7 +206,7 @@ private:
             else { evdevKeys_.erase(key); xi2Keys_.erase(key); }
         } else {
             if (isDown) xi2Keys_.insert(key);
-            else { xi2Keys_.erase(key); if (!isEvdevActive) evdevKeys_.erase(key); }
+            else { xi2Keys_.erase(key); evdevKeys_.erase(key); }
         }
 
         activeKeys = evdevKeys_;
@@ -280,6 +297,15 @@ private:
                     hasXCursor_ = true;
                     xCursorX_ = (float)rx;
                     xCursorY_ = (float)ry;
+                }
+                if (nowT - lastPointerQuery > 0.35) {
+                    char keys[32] = {};
+                    XQueryKeymap(dpy, keys);
+                    bool anyHeld = false;
+                    for (int i = 0; i < 32; ++i) {
+                        if (keys[i] != 0) { anyHeld = true; break; }
+                    }
+                    if (!anyHeld) pushResetKeys();
                 }
                 lastPointerQuery = nowT;
                 pointerQueryPending = false;

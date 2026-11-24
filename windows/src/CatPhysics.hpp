@@ -36,6 +36,12 @@ struct CatSettings {
     bool showMouseBadges = true;
     bool showKeyLegends = true;
     bool footEasterEgg = true;
+    bool tailEasterEgg = true;
+    bool keyboardMarquee = true;
+    int obsCaptureMode = 0; // 0 = off, 1 = OBS transparent window capture, 2 = OBS green screen (#00FF00)
+    bool flipHorizontal = false;
+    bool isEnglish = false;
+    bool isEditMode = false; // runtime-only interactive resize & flip box
     bool petInteraction = true;
     bool fullClickThrough = false;
     bool alwaysOnTop = true;
@@ -59,6 +65,11 @@ struct CatSettings {
         showMouseBadges  = readDword(L"ShowMouseBadges", 1) != 0;
         showKeyLegends   = readDword(L"ShowKeyLegends", 1) != 0;
         footEasterEgg    = readDword(L"FootEasterEgg", 1) != 0;
+        tailEasterEgg    = readDword(L"TailEasterEgg", 1) != 0;
+        keyboardMarquee  = readDword(L"KeyboardMarquee", 1) != 0;
+        obsCaptureMode   = std::clamp((int)readDword(L"OBSCaptureMode", 0), 0, 2);
+        flipHorizontal   = readDword(L"FlipHorizontal", 0) != 0;
+        isEnglish        = readDword(L"LanguageEnglish", 0) != 0;
         petInteraction   = readDword(L"PetInteraction", 1) != 0;
         fullClickThrough = readDword(L"FullClickThrough", 0) != 0;
         alwaysOnTop      = readDword(L"AlwaysOnTop", 1) != 0;
@@ -85,6 +96,11 @@ struct CatSettings {
         writeDword(L"ShowMouseBadges", showMouseBadges ? 1 : 0);
         writeDword(L"ShowKeyLegends", showKeyLegends ? 1 : 0);
         writeDword(L"FootEasterEgg", footEasterEgg ? 1 : 0);
+        writeDword(L"TailEasterEgg", tailEasterEgg ? 1 : 0);
+        writeDword(L"KeyboardMarquee", keyboardMarquee ? 1 : 0);
+        writeDword(L"OBSCaptureMode", (DWORD)obsCaptureMode);
+        writeDword(L"FlipHorizontal", flipHorizontal ? 1 : 0);
+        writeDword(L"LanguageEnglish", isEnglish ? 1 : 0);
         writeDword(L"PetInteraction", petInteraction ? 1 : 0);
         writeDword(L"FullClickThrough", fullClickThrough ? 1 : 0);
         writeDword(L"AlwaysOnTop", alwaysOnTop ? 1 : 0);
@@ -161,6 +177,16 @@ public:
     Spring2D rightPaw{RightPawRest};
     Spring2D hindFoot{HindFootRest};
     Spring1D hindFootActive{0.0f};
+    Spring2D tailTip{{275.0f, 196.0f}};
+    Spring1D tailTyping{0.0f};
+    Spring2D tailFlick{{0.0f, 0.0f}};
+    Spring1D tailCurl{0.0f};
+    Spring1D tailAgility{0.0f};
+    float tailFlickHold = 0.0f;
+    float tailFlickCooldown = 0.0f;
+    // Keyboard marquee: normalized position (0..1) of the light head, plus its speed boost.
+    float marqueePhase = 0.0f;
+    Spring1D marqueeBoost{0.0f};
 
     Spring1D bodyShiftX{0.0f};
     Spring1D bodyTilt{0.0f};
@@ -194,10 +220,14 @@ public:
     float petBodyIntensity = 0.0f;
     int totalPetSessions = 0;
     float sleepiness = 0.0f;
+    float yawnAmount = 0.0f;
+    float yawnTimer_ = 0.0f;
+    bool isYawning_ = false;
+    bool hasYawnedThisIdle_ = false;
 
     float effectiveEyeClosure() const {
         float petClose = std::max(petHeadIntensity, petBodyIntensity * 0.62f);
-        float sleepClose = sleepiness * 0.92f;
+        float sleepClose = std::max(sleepiness * 0.92f, yawnAmount * 0.96f);
         return std::min(1.0f, std::max(blinkProgress_, std::max(petClose, sleepClose)));
     }
 
@@ -247,14 +277,71 @@ public:
             }
             pupilScale.target = 1.12f;
             earTwitch.velocity -= 2.2f;
-            if (settings.showMouseBadges) {
-                std::wstring lbl = (button == 0) ? L"\u5DE6\u952E" : (button == 1 ? L"\u53F3\u952E" : L"\u4E2D\u952E");
+            if (settings.showKeyBadges) {
+                std::wstring lbl = settings.isEnglish
+                    ? (button == 0 ? L"LMB" : (button == 1 ? L"RMB" : L"MMB"))
+                    : ((button == 0) ? L"\u5DE6\u952E" : (button == 1 ? L"\u53F3\u952E" : L"\u4E2D\u952E"));
                 Pt pt = { MouseBaseCenter.x + mouseOffset.point().x, MouseBaseCenter.y + mouseOffset.point().y - 6.0f };
                 spawnFloatingKeycap(lbl, pt, now);
             }
         } else {
             if (button == 0) mousePressLeft.target = 0.0f;
             else mousePressRight.target = 0.0f;
+        }
+    }
+
+    void updateTailHover(const Pt* cp) {
+        if (!cp || tailTyping.value >= 0.25f) return;
+        float seatX = SeatAnchor.x + bodyShiftX.value;
+        float seatY = SeatAnchor.y;
+        float hunt = std::clamp(huntIntensity.value, 0.0f, 1.0f);
+        float agility = std::clamp(tailAgility.value, 0.0f, 1.0f);
+        float wag1 = std::sin(tailPhase) * (8.0f + hunt * 5.5f + agility * 4.0f);
+        float wag2 = std::cos(tailPhase * 1.3f) * (6.0f + hunt * 4.5f + agility * 3.5f);
+        float huntDrop = hunt * 14.0f;
+        Pt flick = tailFlick.point();
+        float curl = tailCurl.value;
+
+        Pt root{seatX + 34.0f, seatY - 6.0f};
+        Pt c1{seatX + 64.0f + flick.x * 0.25f, seatY + 2.0f + wag1 * 0.35f + huntDrop * 0.4f + flick.y * 0.22f + curl * 0.35f};
+        Pt c2{seatX + 66.0f + wag2 * 0.4f + flick.x * 0.65f - curl * 0.45f, seatY - 26.0f + wag1 * 0.7f + huntDrop + flick.y * 0.60f - curl * 0.55f};
+        Pt tip{seatX + 91.0f + wag2 * 0.5f + flick.x, seatY - 30.0f + wag1 * 0.85f + huntDrop + flick.y};
+
+        float bestDist = 1e9f;
+        Pt bestPt = tip;
+        for (float t : {0.35f, 0.58f, 0.80f, 1.0f}) {
+            float u = 1.0f - t;
+            Pt pt{
+                u*u*u*root.x + 3*u*u*t*c1.x + 3*u*t*t*c2.x + t*t*t*tip.x,
+                u*u*u*root.y + 3*u*u*t*c1.y + 3*u*t*t*c2.y + t*t*t*tip.y
+            };
+            float d = std::hypot(pt.x - cp->x, pt.y - cp->y);
+            if (d < bestDist) {
+                bestDist = d;
+                bestPt = pt;
+            }
+        }
+
+        if (bestDist < 24.0f) {
+            float ax = bestPt.x - cp->x;
+            float ay = bestPt.y - cp->y;
+            float len = std::hypot(ax, ay);
+            if (len < 1.0f) { ax = 0.35f; ay = -0.94f; }
+            else { ax /= len; ay /= len; }
+            float tx = std::clamp(ax * 32.0f + (ax >= 0.0f ? 6.0f : -4.0f), -24.0f, 36.0f);
+            float ty = std::clamp(ay * 40.0f + (ay < 0.0f ? -8.0f : 6.0f), -44.0f, 38.0f);
+            tailFlick.setTarget({tx, ty});
+            tailCurl.target = (ay >= 0.0f) ? -18.0f : 20.0f;
+            if (tailFlickCooldown <= 0.0f) {
+                tailFlick.x.velocity += ax * 240.0f;
+                tailFlick.y.velocity += ay * 280.0f;
+                tailCurl.velocity += (ay >= 0.0f) ? -150.0f : 170.0f;
+                earTwitch.velocity += 1.4f;
+                tailFlickCooldown = 0.16f;
+            }
+            tailFlickHold = 0.30f;
+            tailAgility.target = 1.0f;
+            sleepiness = std::max(0.0f, sleepiness - 0.15f);
         }
     }
 
@@ -312,9 +399,35 @@ public:
             }
         }
 
-        // 2. Sleepy idle detection
+        // 2. Sleepy idle detection (+ cute yawn right before drifting off to sleep!)
         double lastAny = std::max(engine.lastKeyActivityTime, std::max(engine.lastMouseMoveTime, lastPetTime_));
         double idleSec = lastAny > 0.0 ? (now - lastAny) : 0.0;
+        if (activeKeys.empty() && idleSec > 42.0 && !isYawning_ && !hasYawnedThisIdle_) {
+            isYawning_ = true;
+            hasYawnedThisIdle_ = true;
+            yawnTimer_ = 0.0f;
+        }
+        if (!activeKeys.empty() || idleSec < 5.0) {
+            isYawning_ = false;
+            hasYawnedThisIdle_ = false;
+            yawnAmount = std::max(0.0f, yawnAmount - dt * 6.0f);
+        } else if (isYawning_) {
+            yawnTimer_ += dt;
+            if (yawnTimer_ < 0.65f) {
+                float u = yawnTimer_ / 0.65f;
+                yawnAmount = u * u * (3.0f - 2.0f * u);
+            } else if (yawnTimer_ < 1.55f) {
+                yawnAmount = 1.0f;
+            } else if (yawnTimer_ < 2.35f) {
+                float u = (2.35f - yawnTimer_) / 0.80f;
+                yawnAmount = u * u * (3.0f - 2.0f * u);
+            } else {
+                yawnAmount = 0.0f;
+                isYawning_ = false;
+            }
+        } else {
+            yawnAmount = std::max(0.0f, yawnAmount - dt * 4.0f);
+        }
         if (activeKeys.empty() && idleSec > 45.0) {
             float targetSleep = std::min(1.0f, (float)((idleSec - 45.0) / 35.0));
             sleepiness += (targetSleep - sleepiness) * dt * 1.5f;
@@ -432,6 +545,38 @@ public:
             hindFootActive.target = 0.0f;
         }
 
+        // Count held physical keys, never key-repeat events or mouse buttons.
+        tailTyping.target = (settings.tailEasterEgg && activeKeys.size() == 4) ? 1.0f : 0.0f;
+        tailTyping.step(dt, 180.0f, 24.0f);
+        // Marquee chase across the keyboard deck: a steady sweep that speeds up while
+        // several keys are held, so a chord visibly "fan out" the light.
+        if (settings.keyboardMarquee) {
+            marqueeBoost.target = std::clamp(((float)activeKeys.size() - 2.0f) / 5.0f, 0.0f, 1.0f);
+            marqueeBoost.step(dt, 90.0f, 20.0f);
+            marqueePhase = std::fmod(marqueePhase + dt * (0.42f + 0.40f * marqueeBoost.value), 1.0f);
+        }
+        PhysicalKey tailKey = PhysicalKey::None;
+        if (tailTyping.target > 0.0f) {
+            for (PhysicalKey k : orderedKeys) {
+                if (k != leftKey && k != rightKey && k != footKey) { tailKey = k; break; }
+            }
+        }
+        Pt tip = tailKey != PhysicalKey::None ? KeyboardLayout::canvasPointForKey(tailKey) : Pt{275.0f, 196.0f};
+        tip.y -= tailTyping.target * (1.0f + std::sin(time * 18.0f)) * 3.0f;
+        tailTip.setTarget(tip);
+        tailTip.step(dt, 280.0f, 26.0f);
+
+        tailFlickHold = std::max(0.0f, tailFlickHold - dt);
+        tailFlickCooldown = std::max(0.0f, tailFlickCooldown - dt);
+        if (tailFlickHold <= 0.0f) {
+            tailFlick.setTarget({0.0f, 0.0f});
+            tailCurl.target = 0.0f;
+            tailAgility.target = 0.0f;
+        }
+        tailFlick.step(dt, 150.0f, 12.0f);
+        tailCurl.step(dt, 135.0f, 10.5f);
+        tailAgility.step(dt, 40.0f, 10.0f);
+
         leftPaw.step(dt, 360.0f, 24.0f);
         rightPaw.step(dt, 360.0f, 24.0f);
         hindFoot.step(dt, 320.0f, 22.0f);
@@ -537,7 +682,8 @@ public:
         // 7. Tail wag speed
         float kpmBoost = std::min(2.4f, (float)engine.currentKPM() / 160.0f);
         float petBoost = std::max(petHeadIntensity, petBodyIntensity) * 1.4f;
-        float tailSpeed = 1.85f + kpmBoost + petBoost + hunt * 2.8f - sleepiness * 1.1f;
+        float agilityBoost = std::clamp(tailAgility.value, 0.0f, 1.0f) * 3.2f;
+        float tailSpeed = 1.85f + kpmBoost + petBoost + hunt * 2.8f + agilityBoost - sleepiness * 1.1f;
         tailPhase += dt * tailSpeed;
 
         // 8. Keycap glow decay

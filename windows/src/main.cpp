@@ -13,13 +13,17 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+// MSVC's GDI+ headers call unqualified min()/max() inside inline helpers; NOMINMAX
+// removes the macros, so the std overloads must be visible before <gdiplus.h>.
+#include <algorithm>
+using std::min;
+using std::max;
 #include <objidl.h>
 #include <gdiplus.h>
 #include <wtsapi32.h>
 #include <string>
 #include <cmath>
 #include <cwchar>
-#include <algorithm>
 #include "KeyMap.hpp"
 #include "InputEngine.hpp"
 #include "CatPhysics.hpp"
@@ -34,7 +38,7 @@
 
 namespace {
 
-constexpr const wchar_t* APP_VERSION = L"1.3.5";
+constexpr const wchar_t* APP_VERSION = L"1.3.7";
 constexpr const wchar_t* VERSION_PROP = L"KuroCatVersion"; // set on the tray owner window so newer builds can take over older ones
 constexpr const wchar_t* TRAY_OWNER_CLASS = L"KuroCatTrayOwnerClass";
 constexpr const wchar_t* OVERLAY_CLASS = L"KuroCatOverlayWindowClass";
@@ -55,7 +59,15 @@ enum MenuCmd : UINT {
     CMD_TOGGLE_MOUSE_BADGES,
     CMD_TOGGLE_KEY_LEGENDS,
     CMD_TOGGLE_FOOT,
+    CMD_TOGGLE_TAIL,
+    CMD_TOGGLE_MARQUEE,
     CMD_TOGGLE_PET,
+    CMD_OBS_OFF,
+    CMD_OBS_TRANSPARENT,
+    CMD_OBS_GREENSCREEN,
+    CMD_TOGGLE_EDIT,
+    CMD_LANG_ZH,
+    CMD_LANG_EN,
     CMD_COAT_BLACK,
     CMD_COAT_SIAMESE,
     CMD_COAT_SHORTHAIR,
@@ -93,6 +105,11 @@ struct AppState {
 
     bool isVisible = true;
     bool isDragging = false;
+    int activeResizeCorner = -1; // -1 = none, 0=TL, 1=TR, 2=BL, 3=BR
+    POINT resizeAnchorScreenPt = {};
+    bool rButtonDown = false;
+    bool pendingMenuAfterAlt = false;
+    POINT pendingMenuPt = {};
     POINT dragStartCursor = {};
     POINT dragStartWinOrigin = {};
     bool hasLastHover = false;
@@ -492,83 +509,114 @@ void setClickThrough(HWND hwnd, bool transparent) {
     }
 }
 
+void applyOBSMode(AppState& app) {
+    if (!app.hwnd) return;
+    LONG_PTR ex = GetWindowLongPtrW(app.hwnd, GWL_EXSTYLE);
+    bool wantToolWindow = (app.settings.obsCaptureMode == 0);
+    bool isToolWindow = (ex & WS_EX_TOOLWINDOW) != 0;
+    if (wantToolWindow != isToolWindow) {
+        if (wantToolWindow) ex |= WS_EX_TOOLWINDOW;
+        else ex &= ~WS_EX_TOOLWINDOW;
+        // Changing WS_EX_TOOLWINDOW requires hiding & re-showing so the shell & OBS Window Capture refresh cleanly.
+        bool wasVis = app.isVisible;
+        if (wasVis) ShowWindow(app.hwnd, SW_HIDE);
+        SetWindowLongPtrW(app.hwnd, GWL_EXSTYLE, ex);
+        SetWindowPos(app.hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        if (wasVis) ShowWindow(app.hwnd, SW_SHOWNOACTIVATE);
+    }
+}
+
 void showContextMenu(AppState& app, POINT screenPt) {
     HMENU menu = CreatePopupMenu();
+    bool en = app.settings.isEnglish;
+    auto tr = [&](const wchar_t* zh, const wchar_t* eng) -> const wchar_t* { return en ? eng : zh; };
 
     // Status & live stats header
     std::wstring statusStr = app.input.isRawInputRegistered
-        ? L"\u25CF \u786C\u4EF6\u7EA7\u5168\u72B6\u6001\u76D1\u542C\u4E2D (Raw Input \u6E38\u620F/\u6253\u5B57)"
-        : L"\u26A0 Raw Input \u672A\u542F\u52A8";
+        ? tr(L"\u25CF \u786C\u4EF6\u7EA7\u5168\u72B6\u6001\u76D1\u542C\u4E2D (Raw Input \u6E38\u620F/\u6253\u5B57)",
+             L"\u25CF Hardware Input Active (Raw Input)")
+        : tr(L"\u26A0 Raw Input \u672A\u542F\u52A8", L"\u26A0 Raw Input Inactive");
     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, statusStr.c_str());
     if (!app.isElevated && app.lastBlockedForegroundTime > 0.0 && nowSeconds() - app.lastBlockedForegroundTime < 600.0) {
-        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"⚠ 刚才的游戏以管理员权限运行，键盘被 Windows 拦截了");
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, tr(L"\u26A0 \u521A\u624D\u7684\u6E38\u620F\u4EE5\u7BA1\u7406\u5458\u6743\u9650\u8FD0\u884C\uFF0C\u952E\u76D8\u88AB Windows \u62E6\u622A\u4E86",
+                                                       L"\u26A0 Foreground admin game blocked keyboard input"));
     }
 
-    std::wstring stats = L"\u4ECA\u65E5\u51FB\u952E " + std::to_wstring(app.input.totalKeystrokesToday)
-        + L"  \u00B7  KPM " + std::to_wstring(app.input.currentKPM())
-        + L"  \u00B7  \u6478\u732B " + std::to_wstring(app.physics.totalPetSessions) + L" \u6B21";
+    std::wstring stats = en
+        ? (L"Today " + std::to_wstring(app.input.totalKeystrokesToday)
+            + L"  \u00B7  KPM " + std::to_wstring(app.input.currentKPM())
+            + L"  \u00B7  Pets " + std::to_wstring(app.physics.totalPetSessions))
+        : (L"\u4ECA\u65E5\u51FB\u952E " + std::to_wstring(app.input.totalKeystrokesToday)
+            + L"  \u00B7  KPM " + std::to_wstring(app.input.currentKPM())
+            + L"  \u00B7  \u6478\u732B " + std::to_wstring(app.physics.totalPetSessions) + L" \u6B21");
     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, stats.c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
-    AppendMenuW(menu, MF_STRING, CMD_TOGGLE_VISIBLE, app.isVisible ? L"\u9690\u85CF\u5C0F\u732B" : L"\u663E\u793A\u5C0F\u732B");
-    AppendMenuW(menu, MF_STRING | (app.settings.fullClickThrough ? MF_CHECKED : 0), CMD_TOGGLE_CLICKTHROUGH, L"\u5B8C\u5168\u9F20\u6807\u7A7F\u900F (Ctrl+Alt+Shift+P / \u6309\u4F4FAlt\u53EF\u53F3\u952E)");
-    AppendMenuW(menu, MF_STRING | (app.settings.alwaysOnTop ? MF_CHECKED : 0), CMD_TOGGLE_TOPMOST, L"\u7A97\u53E3\u7F6E\u9876\u663E\u793A");
-    AppendMenuW(menu, MF_STRING | (isAutoStartEnabled() ? MF_CHECKED : 0), CMD_TOGGLE_AUTOSTART, L"\u5F00\u673A\u81EA\u52A8\u542F\u52A8");
+    AppendMenuW(menu, MF_STRING, CMD_TOGGLE_VISIBLE, app.isVisible ? tr(L"\u9690\u85CF\u684C\u5BA0", L"Hide Pet") : tr(L"\u663E\u793A\u684C\u5BA0", L"Show Pet"));
+    AppendMenuW(menu, MF_STRING | (app.settings.fullClickThrough ? MF_CHECKED : 0), CMD_TOGGLE_CLICKTHROUGH,
+        tr(L"\u5B8C\u5168\u9F20\u6807\u7A7F\u900F (Ctrl+Alt+Shift+P / \u6309\u4F4FAlt\u53EF\u53F3\u952E)",
+           L"Full Click-Through (Ctrl+Alt+Shift+P / Hold Alt)"));
+    AppendMenuW(menu, MF_STRING | (app.settings.alwaysOnTop ? MF_CHECKED : 0), CMD_TOGGLE_TOPMOST, tr(L"\u7A97\u53E3\u7F6E\u9876\u663E\u793A", L"Always On Top"));
+    AppendMenuW(menu, MF_STRING | (isAutoStartEnabled() ? MF_CHECKED : 0), CMD_TOGGLE_AUTOSTART, tr(L"\u5F00\u673A\u81EA\u52A8\u542F\u52A8", L"Launch at Startup"));
     if (app.isElevated) {
-        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"\u2713 \u5DF2\u4EE5\u7BA1\u7406\u5458\u8EAB\u4EFD\u8FD0\u884C\uFF08\u7BA1\u7406\u5458\u6743\u9650\u6E38\u620F\u7684\u952E\u76D8\u4E5F\u80FD\u76D1\u542C\uFF09");
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, tr(L"\u2713 \u5DF2\u4EE5\u7BA1\u7406\u5458\u8EAB\u4EFD\u8FD0\u884C", L"\u2713 Running as Administrator"));
     } else {
-        AppendMenuW(menu, MF_STRING, CMD_RELAUNCH_ADMIN, L"\u4EE5\u7BA1\u7406\u5458\u8EAB\u4EFD\u91CD\u65B0\u542F\u52A8\uFF08\u6E38\u620F\u91CC\u952E\u76D8\u6CA1\u53CD\u5E94\u65F6\u70B9\u8FD9\u91CC\uFF09");
+        AppendMenuW(menu, MF_STRING, CMD_RELAUNCH_ADMIN, tr(L"\u4EE5\u7BA1\u7406\u5458\u8EAB\u4EFD\u91CD\u65B0\u542F\u52A8", L"Restart as Administrator"));
     }
-    AppendMenuW(menu, MF_STRING | (app.settings.runAsAdmin ? MF_CHECKED : 0), CMD_TOGGLE_RUN_AS_ADMIN, L"\u6BCF\u6B21\u542F\u52A8\u90FD\u4EE5\u7BA1\u7406\u5458\u8EAB\u4EFD\u8FD0\u884C");
+    AppendMenuW(menu, MF_STRING | (app.settings.runAsAdmin ? MF_CHECKED : 0), CMD_TOGGLE_RUN_AS_ADMIN, tr(L"\u6BCF\u6B21\u542F\u52A8\u90FD\u4EE5\u7BA1\u7406\u5458\u8EAB\u4EFD\u8FD0\u884C", L"Always Run as Administrator"));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
-    AppendMenuW(menu, MF_STRING | (app.settings.showKeyBadges ? MF_CHECKED : 0), CMD_TOGGLE_BADGES, L"\u663E\u793A\u6309\u952E\u6C14\u6CE1 ([S] [W] [\u21E7])");
-    AppendMenuW(menu, MF_STRING | (app.settings.showMouseBadges ? MF_CHECKED : 0), CMD_TOGGLE_MOUSE_BADGES, L"\u663E\u793A\u9F20\u6807\u70B9\u51FB\u6C14\u6CE1 ([\u5DE6\u952E] [\u53F3\u952E])");
-    AppendMenuW(menu, MF_STRING | (app.settings.showKeyLegends ? MF_CHECKED : 0), CMD_TOGGLE_KEY_LEGENDS, L"\u663E\u793A\u952E\u76D8\u5B57\u7B26");
-    AppendMenuW(menu, MF_STRING | (app.settings.footEasterEgg ? MF_CHECKED : 0), CMD_TOGGLE_FOOT, L"3\u952E\u540C\u65F6\u6309\u300C\u7528\u811A\u6309\u300D\u5F69\u86CB");
-    AppendMenuW(menu, MF_STRING | (app.settings.petInteraction ? MF_CHECKED : 0), CMD_TOGGLE_PET, L"\u6478\u5934/\u6478\u80CC\u95ED\u773C\u4E92\u52A8");
+    AppendMenuW(menu, MF_STRING | (app.settings.showKeyBadges ? MF_CHECKED : 0), CMD_TOGGLE_BADGES, tr(L"\u663E\u793A\u6309\u952E\u6C14\u6CE1 ([S] [W] [\u21E7])", L"Show Key & Click Badges"));
+    AppendMenuW(menu, MF_STRING | (app.settings.showKeyLegends ? MF_CHECKED : 0), CMD_TOGGLE_KEY_LEGENDS, tr(L"\u663E\u793A\u952E\u76D8\u5B57\u7B26", L"Show Keycap Legends"));
+    AppendMenuW(menu, MF_STRING | (app.settings.keyboardMarquee ? MF_CHECKED : 0), CMD_TOGGLE_MARQUEE, tr(L"\u952E\u76D8\u8DD1\u9A6C\u706F\u6D41\u5149", L"Keyboard RGB Marquee"));
+
+    // OBS Live Capture Mode submenu
+    HMENU obsMenu = CreatePopupMenu();
+    AppendMenuW(obsMenu, MF_STRING | (app.settings.obsCaptureMode == 0 ? MF_CHECKED : 0), CMD_OBS_OFF, tr(L"\u5173\u95ED\uFF08\u6B63\u5E38\u684C\u9762\u60AC\u6D6E\uFF09", L"Off (Normal Overlay)"));
+    AppendMenuW(obsMenu, MF_STRING | (app.settings.obsCaptureMode == 1 ? MF_CHECKED : 0), CMD_OBS_TRANSPARENT, tr(L"OBS \u900F\u660E\u7A97\u53E3\u6355\u83B7", L"OBS Transparent Window Capture"));
+    AppendMenuW(obsMenu, MF_STRING | (app.settings.obsCaptureMode == 2 ? MF_CHECKED : 0), CMD_OBS_GREENSCREEN, tr(L"OBS \u7EFF\u5E55\u6A21\u5F0F (#00FF00)", L"OBS Green Screen (#00FF00)"));
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)obsMenu, tr(L"\U0001F4FA \u76F4\u64AD\u6355\u83B7\u6A21\u5F0F (OBS)", L"\U0001F4FA OBS Live Capture Mode"));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+
+    // Interactive resize & flip mode (replaces static scale submenu; also triggered by double-clicking cat)
+    AppendMenuW(menu, MF_STRING | (app.settings.isEditMode ? MF_CHECKED : 0), CMD_TOGGLE_EDIT,
+        app.settings.isEditMode
+            ? tr(L"\u2713 \u5B8C\u6210\u8C03\u6574\u5927\u5C0F\u4E0E\u65B9\u5411", L"\u2713 Finish Resize & Flip")
+            : tr(L"\u8C03\u6574\u5927\u5C0F\u4E0E\u65B9\u5411 (\u53CC\u51FB\u5C0F\u732B)", L"Resize & Flip (Double-Click Cat)"));
 
     // Cat Coat Skin submenu
     HMENU coatMenu = CreatePopupMenu();
-    AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::ClassicBlack ? MF_CHECKED : 0), CMD_COAT_BLACK, L"\u7ECF\u5178\u5C0F\u9ED1\u732B (\u539F\u7248)");
-    AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::Siamese ? MF_CHECKED : 0), CMD_COAT_SIAMESE, L"\u6316\u7164\u66B9\u7F57\u732B");
-    AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::Shorthair ? MF_CHECKED : 0), CMD_COAT_SHORTHAIR, L"美短（银虎斑加白）");
-    AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::OrangeWhite ? MF_CHECKED : 0), CMD_COAT_ORANGE_WHITE, L"橘白猫");
-    AppendMenuW(menu, MF_POPUP, (UINT_PTR)coatMenu, L"\u732B\u54AA\u76AE\u80A4");
+    AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::ClassicBlack ? MF_CHECKED : 0), CMD_COAT_BLACK, tr(L"\u7ECF\u5178\u5C0F\u9ED1\u732B (\u539F\u7248)", L"Classic Black Cat"));
+    AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::Siamese ? MF_CHECKED : 0), CMD_COAT_SIAMESE, tr(L"\u6316\u7164\u66B9\u7F57\u732B", L"Siamese Cat"));
+    AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::Shorthair ? MF_CHECKED : 0), CMD_COAT_SHORTHAIR, tr(L"\u7F8E\u77ED\uFF08\u94F6\u864E\u6591\u52A0\u767D\uFF09", L"Silver Tabby Shorthair"));
+    AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::OrangeWhite ? MF_CHECKED : 0), CMD_COAT_ORANGE_WHITE, tr(L"\u6A58\u767D\u732B", L"Orange & White Cat"));
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)coatMenu, tr(L"\u732B\u54AA\u76AE\u80A4", L"Cat Skin"));
 
     // Keyboard Theme submenu
     HMENU kbMenu = CreatePopupMenu();
-    AppendMenuW(kbMenu, MF_STRING | (app.settings.keyboardTheme == KeyboardTheme::ClassicMilk ? MF_CHECKED : 0), CMD_KB_MILK, L"\u7ECF\u5178\u5976\u767D\u6696\u9EC4 (\u539F\u7248)");
-    AppendMenuW(kbMenu, MF_STRING | (app.settings.keyboardTheme == KeyboardTheme::MidnightHacker ? MF_CHECKED : 0), CMD_KB_HACKER, L"\u6697\u591C\u6781\u5BA2\u9ED1");
-    AppendMenuW(kbMenu, MF_STRING | (app.settings.keyboardTheme == KeyboardTheme::RetroCream ? MF_CHECKED : 0), CMD_KB_RETRO, L"\u590D\u53E4\u5976\u6CB9\u7070");
-    AppendMenuW(menu, MF_POPUP, (UINT_PTR)kbMenu, L"\u952E\u76D8\u914D\u8272");
+    AppendMenuW(kbMenu, MF_STRING | (app.settings.keyboardTheme == KeyboardTheme::ClassicMilk ? MF_CHECKED : 0), CMD_KB_MILK, tr(L"\u7ECF\u5178\u5976\u767D\u6696\u9EC4 (\u539F\u7248)", L"Classic Milk White"));
+    AppendMenuW(kbMenu, MF_STRING | (app.settings.keyboardTheme == KeyboardTheme::MidnightHacker ? MF_CHECKED : 0), CMD_KB_HACKER, tr(L"\u6697\u591C\u6781\u5BA2\u9ED1", L"Midnight Hacker Black"));
+    AppendMenuW(kbMenu, MF_STRING | (app.settings.keyboardTheme == KeyboardTheme::RetroCream ? MF_CHECKED : 0), CMD_KB_RETRO, tr(L"\u590D\u53E4\u5976\u6CB9\u7070", L"Retro Cream Gray"));
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)kbMenu, tr(L"\u952E\u76D8\u914D\u8272", L"Keyboard Theme"));
 
     // Eye Color submenu
     HMENU eyeMenu = CreatePopupMenu();
-    AppendMenuW(eyeMenu, MF_STRING | (app.settings.eyeTheme == EyeColorTheme::NeonChartreuse ? MF_CHECKED : 0), CMD_EYE_LIME, L"\u7ECF\u5178\u8367\u5149\u9EC4\u7EFF (\u539F\u7248)");
-    AppendMenuW(eyeMenu, MF_STRING | (app.settings.eyeTheme == EyeColorTheme::SiameseBlue ? MF_CHECKED : 0), CMD_EYE_BLUE, L"\u66B9\u7F57\u5B9D\u77F3\u84DD");
-    AppendMenuW(eyeMenu, MF_STRING | (app.settings.eyeTheme == EyeColorTheme::WarmAmber ? MF_CHECKED : 0), CMD_EYE_AMBER, L"\u7425\u73C0\u91D1\u77B3");
-    AppendMenuW(eyeMenu, MF_STRING | (app.settings.eyeTheme == EyeColorTheme::IceCyan ? MF_CHECKED : 0), CMD_EYE_CYAN, L"\u51B0\u6676\u6D45\u84DD");
-    AppendMenuW(eyeMenu, MF_STRING | (app.settings.eyeTheme == EyeColorTheme::SoftAmber ? MF_CHECKED : 0), CMD_EYE_SOFT_AMBER, L"柔和琥珀");
-    AppendMenuW(eyeMenu, MF_STRING | (app.settings.eyeTheme == EyeColorTheme::ReferenceHazel ? MF_CHECKED : 0), CMD_EYE_REFERENCE_HAZEL, L"淡金青绿");
-    AppendMenuW(menu, MF_POPUP, (UINT_PTR)eyeMenu, L"\u77B3\u8272\u5207\u6362");
+    AppendMenuW(eyeMenu, MF_STRING | (app.settings.eyeTheme == EyeColorTheme::NeonChartreuse ? MF_CHECKED : 0), CMD_EYE_LIME, tr(L"\u7ECF\u5178\u8367\u5149\u9EC4\u7EFF (\u539F\u7248)", L"Neon Chartreuse"));
+    AppendMenuW(eyeMenu, MF_STRING | (app.settings.eyeTheme == EyeColorTheme::SiameseBlue ? MF_CHECKED : 0), CMD_EYE_BLUE, tr(L"\u66B9\u7F57\u5B9D\u77F3\u84DD", L"Siamese Ice Blue"));
+    AppendMenuW(eyeMenu, MF_STRING | (app.settings.eyeTheme == EyeColorTheme::WarmAmber ? MF_CHECKED : 0), CMD_EYE_AMBER, tr(L"\u7425\u73C0\u91D1\u77B3", L"Warm Amber"));
+    AppendMenuW(eyeMenu, MF_STRING | (app.settings.eyeTheme == EyeColorTheme::IceCyan ? MF_CHECKED : 0), CMD_EYE_CYAN, tr(L"\u51B0\u6676\u6D45\u84DD", L"Ice Cyan"));
+    AppendMenuW(eyeMenu, MF_STRING | (app.settings.eyeTheme == EyeColorTheme::SoftAmber ? MF_CHECKED : 0), CMD_EYE_SOFT_AMBER, tr(L"\u67D4\u548C\u7425\u73C0", L"Soft Amber"));
+    AppendMenuW(eyeMenu, MF_STRING | (app.settings.eyeTheme == EyeColorTheme::ReferenceHazel ? MF_CHECKED : 0), CMD_EYE_REFERENCE_HAZEL, tr(L"\u6DE1\u91D1\u9752\u7EFF", L"Golden Hazel"));
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)eyeMenu, tr(L"\u77B3\u8272\u5207\u6362", L"Eye Color"));
 
-    // Scale submenu
-    HMENU scaleMenu = CreatePopupMenu();
-    auto chk = [&](float v) -> UINT { return std::fabs(app.settings.scale - v) < 0.05f ? MF_CHECKED : 0; };
-    AppendMenuW(scaleMenu, MF_STRING | chk(0.65f), CMD_SCALE_65,  L"\u8FF7\u4F60 (0.65x)");
-    AppendMenuW(scaleMenu, MF_STRING | chk(0.85f), CMD_SCALE_85,  L"\u504F\u5C0F (0.85x)");
-    AppendMenuW(scaleMenu, MF_STRING | chk(1.00f), CMD_SCALE_100, L"\u6807\u51C6 (1.0x)");
-    AppendMenuW(scaleMenu, MF_STRING | chk(1.25f), CMD_SCALE_125, L"\u504F\u5927 (1.25x)");
-    AppendMenuW(scaleMenu, MF_STRING | chk(1.50f), CMD_SCALE_150, L"\u8D85\u5927 (1.5x)");
-    AppendMenuW(menu, MF_POPUP, (UINT_PTR)scaleMenu, L"\u5C3A\u5BF8\u5927\u5C0F");
+    // Language submenu
+    HMENU langMenu = CreatePopupMenu();
+    AppendMenuW(langMenu, MF_STRING | (!app.settings.isEnglish ? MF_CHECKED : 0), CMD_LANG_ZH, L"\u7B80\u4F53\u4E2D\u6587");
+    AppendMenuW(langMenu, MF_STRING | (app.settings.isEnglish ? MF_CHECKED : 0), CMD_LANG_EN, L"English");
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)langMenu, L"\U0001F310 \u8BED\u8A00 / Language");
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, CMD_DEMO_BURST, L"\u6F14\u793A\u6253\u5B57\u52A8\u753B");
-    AppendMenuW(menu, MF_STRING, CMD_RESET_POS, L"\u91CD\u7F6E\u4F4D\u7F6E\u5230\u53F3\u4E0B\u89D2");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, CMD_QUIT, L"\u9000\u51FA KuroCat");
+    AppendMenuW(menu, MF_STRING, CMD_QUIT, tr(L"\u9000\u51FA KuroCat", L"Quit KuroCat"));
 
     HWND menuOwner = app.menuOwnerHwnd ? app.menuOwnerHwnd : app.hwnd;
     SetForegroundWindow(menuOwner);
@@ -613,8 +661,42 @@ void showContextMenu(AppState& app, POINT screenPt) {
             app.settings.footEasterEgg = !app.settings.footEasterEgg;
             app.settings.saveToRegistry();
             break;
+        case CMD_TOGGLE_TAIL:
+            app.settings.tailEasterEgg = !app.settings.tailEasterEgg;
+            app.settings.saveToRegistry();
+            break;
+        case CMD_TOGGLE_MARQUEE:
+            app.settings.keyboardMarquee = !app.settings.keyboardMarquee;
+            app.settings.saveToRegistry();
+            break;
         case CMD_TOGGLE_PET:
             app.settings.petInteraction = !app.settings.petInteraction;
+            app.settings.saveToRegistry();
+            break;
+        case CMD_OBS_OFF:
+            app.settings.obsCaptureMode = 0;
+            app.settings.saveToRegistry();
+            applyOBSMode(app);
+            break;
+        case CMD_OBS_TRANSPARENT:
+            app.settings.obsCaptureMode = 1;
+            app.settings.saveToRegistry();
+            applyOBSMode(app);
+            break;
+        case CMD_OBS_GREENSCREEN:
+            app.settings.obsCaptureMode = 2;
+            app.settings.saveToRegistry();
+            applyOBSMode(app);
+            break;
+        case CMD_TOGGLE_EDIT:
+            app.settings.isEditMode = !app.settings.isEditMode;
+            break;
+        case CMD_LANG_ZH:
+            app.settings.isEnglish = false;
+            app.settings.saveToRegistry();
+            break;
+        case CMD_LANG_EN:
+            app.settings.isEnglish = true;
             app.settings.saveToRegistry();
             break;
         case CMD_COAT_BLACK:
@@ -630,7 +712,7 @@ void showContextMenu(AppState& app, POINT screenPt) {
         case CMD_COAT_SHORTHAIR:
         case CMD_COAT_ORANGE_WHITE:
             app.settings.coatTheme = cmd == CMD_COAT_SHORTHAIR ? CatCoatTheme::Shorthair : CatCoatTheme::OrangeWhite;
-            app.settings.eyeTheme = EyeColorTheme::SoftAmber;
+            app.settings.eyeTheme = cmd == CMD_COAT_SHORTHAIR ? EyeColorTheme::ReferenceHazel : EyeColorTheme::WarmAmber;
             app.settings.saveToRegistry();
             break;
         case CMD_EYE_SOFT_AMBER: app.settings.eyeTheme = EyeColorTheme::SoftAmber; app.settings.saveToRegistry(); break;
@@ -729,35 +811,50 @@ void tickAndRender(AppState& app) {
     }
 
     // Smart Click-Through + Petting Detection
-    if (!app.isDragging) {
+    if (!app.isDragging && app.activeResizeCorner < 0) {
         POINT cur = {};
         GetCursorPos(&cur);
         if (PtInRect(&wr, cur)) {
-            Pt cp = {
+            Pt rawCp = {
                 (float)(cur.x - wr.left) / (float)w * CatPhysics::CanvasWidth,
                 (float)(cur.y - wr.top)  / (float)h * CatPhysics::CanvasHeight
             };
-            CatHitZone zone = CatRenderer::hitTest(cp, app.physics, app.settings.coatTheme);
-            if (zone == CatHitZone::Head) {
-                if (app.hasLastHover) {
-                    float d = std::hypot(cp.x - app.lastHoverCanvas.x, cp.y - app.lastHoverCanvas.y);
-                    if (d > 1.2f && d < 80.0f) {
-                        app.physics.registerPetStroke(cp, d, true, app.settings);
-                    }
-                }
-                app.lastHoverCanvas = cp;
-                app.hasLastHover = true;
-            } else {
+            if (app.settings.isEditMode) {
+                int editHit = CatRenderer::hitTestEditOverlay(rawCp);
+                setClickThrough(app.hwnd, editHit < 0);
                 app.hasLastHover = false;
+            } else {
+                Pt cp = app.settings.flipHorizontal ? Pt{ CatPhysics::CanvasWidth - rawCp.x, rawCp.y } : rawCp;
+                CatHitZone zone = CatRenderer::hitTest(cp, app.physics, app.settings.coatTheme);
+                app.physics.updateTailHover(&cp);
+                if (zone == CatHitZone::Head) {
+                    if (app.hasLastHover) {
+                        float d = std::hypot(cp.x - app.lastHoverCanvas.x, cp.y - app.lastHoverCanvas.y);
+                        if (d > 1.2f && d < 80.0f) {
+                            app.physics.registerPetStroke(cp, d, true, app.settings);
+                        }
+                    }
+                    app.lastHoverCanvas = cp;
+                    app.hasLastHover = true;
+                } else {
+                    app.hasLastHover = false;
+                }
+                // Holding Alt temporarily unlocks click-through so user can ALWAYS right-click or drag the cat!
+                bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                bool clickThrough = (app.settings.fullClickThrough && !altHeld) || (zone == CatHitZone::None);
+                setClickThrough(app.hwnd, clickThrough);
             }
-            // Holding Alt temporarily unlocks click-through so user can ALWAYS right-click or drag the cat!
-            bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-            bool clickThrough = (app.settings.fullClickThrough && !altHeld) || (zone == CatHitZone::None);
-            setClickThrough(app.hwnd, clickThrough);
         } else {
             app.hasLastHover = false;
+            app.physics.updateTailHover(nullptr);
             setClickThrough(app.hwnd, true);
         }
+    }
+
+    if (app.pendingMenuAfterAlt && (GetAsyncKeyState(VK_MENU) & 0x8000) == 0) {
+        app.pendingMenuAfterAlt = false;
+        POINT pt = app.pendingMenuPt;
+        showContextMenu(app, pt);
     }
 
     // Render 32-bit Premultiplied ARGB frame directly into DIB and present via UpdateLayeredWindow
@@ -766,7 +863,7 @@ void tickAndRender(AppState& app) {
 
     Gdiplus::Bitmap bmp(w, h, w * 4, PixelFormat32bppPARGB, static_cast<BYTE*>(app.dibBits));
     Gdiplus::Graphics g(&bmp);
-    g.Clear(Gdiplus::Color(0, 0, 0, 0));
+    g.Clear(app.settings.obsCaptureMode == 2 ? Gdiplus::Color(255, 0, 255, 0) : Gdiplus::Color(0, 0, 0, 0));
     g.ScaleTransform((float)w / CatPhysics::CanvasWidth, (float)h / CatPhysics::CanvasHeight);
     CatRenderer::draw(g, app.physics, app.settings);
 
@@ -856,13 +953,49 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             break;
 
+        case WM_LBUTTONDBLCLK:
+            if (app && hwnd == app->hwnd) {
+                app->settings.isEditMode = !app->settings.isEditMode;
+            }
+            return 0;
+
         case WM_LBUTTONDOWN: {
             bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-            if (app && (!app->settings.fullClickThrough || altHeld)) {
-                app->isDragging = true;
-                GetCursorPos(&app->dragStartCursor);
+            if (app && hwnd == app->hwnd && (app->settings.isEditMode || !app->settings.fullClickThrough || altHeld)) {
                 RECT wr = {};
                 GetWindowRect(hwnd, &wr);
+                int w = std::max(1, (int)(wr.right - wr.left));
+                int h = std::max(1, (int)(wr.bottom - wr.top));
+                POINT cur = {};
+                GetCursorPos(&cur);
+                if (app->settings.isEditMode) {
+                    Pt rawCp = {
+                        (float)(cur.x - wr.left) / (float)w * CatPhysics::CanvasWidth,
+                        (float)(cur.y - wr.top)  / (float)h * CatPhysics::CanvasHeight
+                    };
+                    int hit = CatRenderer::hitTestEditOverlay(rawCp);
+                    if (hit == 10) {
+                        app->settings.flipHorizontal = !app->settings.flipHorizontal;
+                        app->settings.saveToRegistry();
+                        return 0;
+                    }
+                    if (hit == 11) {
+                        app->settings.isEditMode = false;
+                        return 0;
+                    }
+                    if (hit >= 0 && hit <= 3) {
+                        app->activeResizeCorner = hit;
+                        // Windows screen Y is top-down: anchor opposite corner
+                        if (hit == 0) app->resizeAnchorScreenPt = { wr.right, wr.bottom };
+                        else if (hit == 1) app->resizeAnchorScreenPt = { wr.left, wr.bottom };
+                        else if (hit == 2) app->resizeAnchorScreenPt = { wr.right, wr.top };
+                        else app->resizeAnchorScreenPt = { wr.left, wr.top };
+                        SetCapture(hwnd);
+                        return 0;
+                    }
+                }
+                app->isDragging = true;
+                app->dragStartCursor = cur;
                 app->dragStartWinOrigin = { wr.left, wr.top };
                 SetCapture(hwnd);
             }
@@ -870,6 +1003,22 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_MOUSEMOVE:
+            if (app && app->activeResizeCorner >= 0) {
+                POINT cur = {};
+                GetCursorPos(&cur);
+                float dx = std::fabs((float)(cur.x - app->resizeAnchorScreenPt.x));
+                float dy = std::fabs((float)(cur.y - app->resizeAnchorScreenPt.y));
+                float newScale = std::clamp(std::max(dx / CatPhysics::CanvasWidth, dy / CatPhysics::CanvasHeight), 0.45f, 2.50f);
+                int nw = (int)std::round(CatPhysics::CanvasWidth * newScale);
+                int nh = (int)std::round(CatPhysics::CanvasHeight * newScale);
+                int nx = (app->activeResizeCorner == 0 || app->activeResizeCorner == 2)
+                    ? (app->resizeAnchorScreenPt.x - nw) : app->resizeAnchorScreenPt.x;
+                int ny = (app->activeResizeCorner == 0 || app->activeResizeCorner == 1)
+                    ? (app->resizeAnchorScreenPt.y - nh) : app->resizeAnchorScreenPt.y;
+                app->settings.scale = newScale;
+                SetWindowPos(hwnd, nullptr, nx, ny, nw, nh, SWP_NOZORDER | SWP_NOACTIVATE);
+                return 0;
+            }
             if (app && app->isDragging) {
                 POINT cur = {};
                 GetCursorPos(&cur);
@@ -880,6 +1029,16 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_LBUTTONUP:
+            if (app && app->activeResizeCorner >= 0) {
+                app->activeResizeCorner = -1;
+                ReleaseCapture();
+                RECT wr = {};
+                GetWindowRect(hwnd, &wr);
+                app->settings.posX = wr.left;
+                app->settings.posY = wr.top;
+                app->settings.saveToRegistry();
+                return 0;
+            }
             if (app && app->isDragging) {
                 app->isDragging = false;
                 ReleaseCapture();
@@ -891,11 +1050,35 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
 
+        case WM_RBUTTONDOWN:
+            if (app && hwnd == app->hwnd) {
+                bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                if (!app->settings.fullClickThrough || altHeld) {
+                    app->rButtonDown = true;
+                }
+            }
+            return 0;
+
         case WM_RBUTTONUP:
-            if (app) {
+            if (app && hwnd == app->hwnd && app->rButtonDown) {
+                app->rButtonDown = false;
                 POINT pt = {};
                 GetCursorPos(&pt);
-                showContextMenu(*app, pt);
+                if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
+                    // Defer opening the popup menu until Alt is released; otherwise
+                    // Windows' TrackPopupMenu modal loop cancels the menu on WM_SYSKEYUP(VK_MENU).
+                    app->pendingMenuAfterAlt = true;
+                    app->pendingMenuPt = pt;
+                } else {
+                    showContextMenu(*app, pt);
+                }
+            }
+            return 0;
+
+        case WM_CANCELMODE:
+        case WM_CAPTURECHANGED:
+            if (app && hwnd == app->hwnd) {
+                app->rButtonDown = false;
             }
             return 0;
 
@@ -1072,6 +1255,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
+    wc.style = CS_DBLCLKS;
     wc.lpfnWndProc = wndProc;
     wc.hInstance = hInst;
     wc.lpszClassName = OVERLAY_CLASS;
@@ -1112,7 +1296,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         computeDefaultOrigin(initW, initH, initX, initY);
     }
 
-    DWORD exStyle = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT
+    DWORD exStyle = WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT
+                  | (app.settings.obsCaptureMode == 0 ? WS_EX_TOOLWINDOW : 0)
                   | (app.settings.alwaysOnTop ? WS_EX_TOPMOST : 0);
 
     app.hwnd = CreateWindowExW(

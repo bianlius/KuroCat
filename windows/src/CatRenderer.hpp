@@ -38,11 +38,30 @@ public:
         return CatHitZone::None;
     }
 
+    /// Edit-mode hit test in unflipped 360x320 canvas coordinates:
+    /// 0..3 = corner resize handles, 10 = flip button, 11 = done button, 12 = inside edit box, -1 = outside.
+    static int hitTestEditOverlay(Pt p) {
+        if (p.x >= 92.0f && p.x <= 178.0f && p.y >= 10.0f && p.y <= 38.0f) return 10;
+        if (p.x >= 182.0f && p.x <= 268.0f && p.y >= 10.0f && p.y <= 38.0f) return 11;
+        constexpr Pt corners[4] = { {10.0f, 10.0f}, {350.0f, 10.0f}, {10.0f, 310.0f}, {350.0f, 310.0f} };
+        for (int i = 0; i < 4; ++i) {
+            if (std::hypot(p.x - corners[i].x, p.y - corners[i].y) <= 18.0f) return i;
+        }
+        if (p.x >= 6.0f && p.x <= 354.0f && p.y >= 6.0f && p.y <= 314.0f) return 12;
+        return -1;
+    }
+
     static void draw(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings) {
         using namespace Gdiplus;
         g.SetSmoothingMode(SmoothingModeAntiAlias);
         g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
         g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
+
+        GraphicsState flipState = g.Save();
+        if (settings.flipHorizontal) {
+            g.TranslateTransform(CatPhysics::CanvasWidth, 0.0f);
+            g.ScaleTransform(-1.0f, 1.0f);
+        }
 
         float breath = std::sin(physics.time * 2.1f) * 1.6f;
         float seatX = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value;
@@ -58,10 +77,9 @@ public:
         drawMouse(g, physics, settings.keyboardTheme);
 
         // 2. Mini 65% Mechanical Keyboard (facing cat) + Backlit Glow
-        drawKeyboard(g, physics, settings.keyboardTheme, settings.eyeTheme, settings.showKeyLegends);
+        drawKeyboard(g, physics, settings.keyboardTheme, settings.eyeTheme, settings.showKeyLegends, settings.keyboardMarquee);
 
-        // 3. Tail
-        drawTail(g, seatX, seatY, physics, settings.coatTheme);
+        if (physics.tailTyping.value < 0.5f) drawTail(g, seatX, seatY, physics, settings.coatTheme);
 
         // 4. 3D-Projected Ears (behind crown silhouette)
         drawEarsLayer(g, headCenter, physics, settings.coatTheme);
@@ -80,6 +98,8 @@ public:
         // 8. Front Paws (Idle Sitting & Dynamic Reaching)
         drawFrontPaws(g, seatX, seatY, breath, physics, settings.coatTheme);
 
+        if (physics.tailTyping.value >= 0.5f) drawTail(g, seatX, seatY, physics, settings.coatTheme);
+
         // 9. Floating Keycap Badges (keyboard + mouse clicks)
         if (!physics.floatingKeycaps.empty()) {
             drawFloatingKeycaps(g, physics);
@@ -87,6 +107,61 @@ public:
 
         // 10. Subtle Petting Sparkles & Sleep Z
         drawSparkles(g, physics, settings.eyeTheme);
+
+        g.Restore(flipState);
+
+        if (settings.isEditMode) {
+            drawEditOverlay(g, settings.isEnglish, settings.scale);
+        }
+    }
+
+    static void drawEditOverlay(Gdiplus::Graphics& g, bool isEnglish, float scale) {
+        using namespace Gdiplus;
+        GraphicsPath boxPath;
+        addRoundedRect(boxPath, 10.0f, 10.0f, 340.0f, 300.0f, 12.0f);
+        SolidBrush tint(Color(18, 41, 143, 250));
+        g.FillPath(&tint, &boxPath);
+
+        Pen dashPen(Color(235, 51, 158, 255), 1.8f);
+        REAL dashes[2] = { 4.0f, 2.5f };
+        dashPen.SetDashPattern(dashes, 2);
+        g.DrawPath(&dashPen, &boxPath);
+
+        constexpr Pt corners[4] = { {10.0f, 10.0f}, {350.0f, 10.0f}, {10.0f, 310.0f}, {350.0f, 310.0f} };
+        SolidBrush whiteBrush(Color(255, 255, 255, 255));
+        Pen handlePen(Color(255, 36, 133, 245), 2.0f);
+        for (const auto& c : corners) {
+            g.FillEllipse(&whiteBrush, c.x - 6.5f, c.y - 6.5f, 13.0f, 13.0f);
+            g.DrawEllipse(&handlePen, c.x - 6.5f, c.y - 6.5f, 13.0f, 13.0f);
+        }
+
+        FontFamily ff(L"Segoe UI");
+        Font btnFont(&ff, 10.0f, FontStyleBold, UnitPixel);
+        StringFormat sf;
+        sf.SetAlignment(StringAlignmentCenter);
+        sf.SetLineAlignment(StringAlignmentCenter);
+
+        auto drawBtn = [&](float x, float y, float w, float h, const wchar_t* txt, bool primary) {
+            GraphicsPath bp;
+            addRoundedRect(bp, x, y, w, h, 11.0f);
+            SolidBrush fill(primary ? Color(242, 41, 138, 245) : Color(224, 36, 38, 48));
+            Pen rim(Color(72, 255, 255, 255), 0.9f);
+            g.FillPath(&fill, &bp);
+            g.DrawPath(&rim, &bp);
+            g.DrawString(txt, -1, &btnFont, RectF(x, y, w, h), &sf, &whiteBrush);
+        };
+
+        drawBtn(94.0f, 12.0f, 82.0f, 24.0f, isEnglish ? L"\u21C4 Flip" : L"\u21C4 \u7FFB\u8F6C", false);
+        drawBtn(184.0f, 12.0f, 82.0f, 24.0f, isEnglish ? L"\u2713 Done" : L"\u2713 \u5B8C\u6210", true);
+
+        wchar_t buf[16] = {};
+        swprintf_s(buf, L"%.0f%%", scale * 100.0f);
+        GraphicsPath sp;
+        addRoundedRect(sp, 158.0f, 290.0f, 44.0f, 16.0f, 6.0f);
+        SolidBrush spBg(Color(210, 30, 33, 41));
+        Font spFont(&ff, 9.5f, FontStyleBold, UnitPixel);
+        g.FillPath(&spBg, &sp);
+        g.DrawString(buf, -1, &spFont, RectF(158.0f, 290.0f, 44.0f, 16.0f), &sf, &whiteBrush);
     }
 
 private:
@@ -109,9 +184,11 @@ private:
     static Gdiplus::Color pawColor(CatCoatTheme c) { return patterned(c) ? rgb(0xF2EEE4) : (c == CatCoatTheme::Siamese ? siamesePoint() : catBlack()); }
     static Gdiplus::Color earTailColor(CatCoatTheme c) { return c == CatCoatTheme::Siamese ? siamesePoint() : limbColor(c); }
     static Gdiplus::Color creaseColor(CatCoatTheme c, BYTE a = 255) { return patterned(c) ? rgb(0x8B8171, (BYTE)(a*0.60f)) : contourMint(a); }
-    static Gdiplus::PointF coatMarkPoint(CoatPoint p, bool headSurface, bool skull, CatCoatTheme coat, float seatX, float seatY, Pt head, const CatPhysics& physics) {
+    static Gdiplus::PointF coatMarkPoint(CoatPoint p, bool headSurface, bool skull, CatCoatTheme coat, float seatX, float seatY, Pt head, const CatPhysics& physics, bool whiteSurface=false) {
         if (headSurface) {
-            float depth=coat==CatCoatTheme::OrangeWhite ? 29.6f*std::sqrt(std::max(0.0f,1-p.x*p.x/(46*46)-p.y*p.y/(40*40))) : 27.5f;
+            float radius=std::max(0.0f,1-p.x*p.x/(46*46)-p.y*p.y/(40*40));
+            float surface=whiteSurface ? radius*radius*(3-2*radius) : std::sqrt(radius);
+            float depth=coat==CatCoatTheme::OrangeWhite ? 29.6f*surface : 27.5f;
             Pt q=skull ? Pt{p.x,p.y} : projectHead3D(p.x,p.y,depth,physics.headYaw.value*0.50f,physics.headPitch.value*0.36f);
             float c = std::cos(physics.headTilt.value), s = std::sin(physics.headTilt.value);
             return {head.x + q.x*c - q.y*s, head.y + q.x*s + q.y*c};
@@ -123,14 +200,37 @@ private:
     static void drawCoatMarks(Gdiplus::Graphics& g, float seatX, float seatY, Pt head, const CatPhysics& physics, CatCoatTheme coat) {
         using namespace Gdiplus;
         const auto& marks = coat == CatCoatTheme::Shorthair ? shorthairMarks() : orangeWhiteMarks();
+        const CoatMark* bib=nullptr;
+        for (const auto& mark:marks) if (mark.head && !mark.skull && mark.rgb==0xF2EEE4) {
+            for (const auto& p:mark.points) if (std::abs(p.x)>46) {bib=&mark;break;}
+            if (bib) break;
+        }
+        float overlap=std::min(1.0f,std::abs(physics.headYaw.value)*std::max(0.0f,physics.headPitch.value));
+        float coverage=overlap*overlap*(3-2*overlap);
         for (const auto& mark : marks) {
+            if (mark.clipToBib && coverage==0) continue;
+            GraphicsState saved=g.Save();
+            if (mark.clipToBib && bib) {
+                std::vector<PointF> clipPoints;
+                for (const auto& p:bib->points) clipPoints.push_back(coatMarkPoint(p,true,false,coat,seatX,seatY,head,physics,true));
+                GraphicsPath clip;clip.AddPolygon(clipPoints.data(),(INT)clipPoints.size());g.SetClip(&clip,CombineModeIntersect);
+            }
             std::vector<PointF> points;
-            for (const auto& p : mark.points) points.push_back(coatMarkPoint(p, mark.head, mark.skull, coat, seatX, seatY, head, physics));
+            for (auto p : mark.points) {
+                if (mark.clipToBib) {
+                    float rim=std::min(1.0f,std::max(0.0f,(p.y-20)/6));
+                    p.x*=1-0.5f*rim*(1-coverage);
+                    if (p.y>20) p.y=20+(p.y-20)*(0.75f+0.25f*coverage);
+                }
+                points.push_back(coatMarkPoint(p, mark.head, mark.skull, coat, seatX, seatY, head, physics, mark.rgb==0xF2EEE4));
+            }
             GraphicsPath path;
             Color color = rgb(mark.rgb, (BYTE)(mark.alpha*255));
             if (mark.width == 0) { path.AddPolygon(points.data(), (INT)points.size()); SolidBrush brush(color); g.FillPath(&brush, &path); }
             else { path.AddLines(points.data(), (INT)points.size()); Pen pen(color, mark.width); pen.SetStartCap(LineCapRound); pen.SetEndCap(LineCapRound); pen.SetLineJoin(LineJoinRound); g.DrawPath(&pen, &path); }
+            g.Restore(saved);
         }
+
     }
 
     static Gdiplus::Color eyePrimary(EyeColorTheme t, BYTE a = 255) {
@@ -149,6 +249,24 @@ private:
         t = std::clamp(t, 0.0f, 1.0f);
         auto lerp = [t](BYTE x, BYTE y) -> BYTE { return (BYTE)std::clamp((int)(x + (y - x) * t + 0.5f), 0, 255); };
         return Gdiplus::Color(lerp(a.GetA(), b.GetA()), lerp(a.GetR(), b.GetR()), lerp(a.GetG(), b.GetG()), lerp(a.GetB(), b.GetB()));
+    }
+
+    // Hue wheel helper for the keyboard marquee (one full hue cycle per sweep).
+    static Gdiplus::Color hsvColor(float h, float s, float v, BYTE a = 255) {
+        h = h - std::floor(h);
+        float c = v * s;
+        float x = c * (1.0f - std::fabs(std::fmod(h * 6.0f, 2.0f) - 1.0f));
+        float m = v - c;
+        float r = 0.0f, g = 0.0f, b = 0.0f;
+        switch ((int)(h * 6.0f) % 6) {
+            case 0: r = c; g = x; break;
+            case 1: r = x; g = c; break;
+            case 2: g = c; b = x; break;
+            case 3: g = x; b = c; break;
+            case 4: r = x; b = c; break;
+            default: r = c; b = x; break;
+        }
+        return Gdiplus::Color(a, (BYTE)((r + m) * 255.0f), (BYTE)((g + m) * 255.0f), (BYTE)((b + m) * 255.0f));
     }
 
     static void addRoundedRect(Gdiplus::GraphicsPath& p, float x, float y, float w, float h, float r) {
@@ -277,7 +395,7 @@ private:
         }
     }
 
-    static void drawKeyboard(Gdiplus::Graphics& g, const CatPhysics& physics, KeyboardTheme theme, EyeColorTheme eyeTheme, bool showLegends) {
+    static void drawKeyboard(Gdiplus::Graphics& g, const CatPhysics& physics, KeyboardTheme theme, EyeColorTheme eyeTheme, bool showLegends, bool marquee) {
         using namespace Gdiplus;
         Pt tl = KeyboardLayout::screenQuadPoint(-0.012f, -0.04f);
         Pt tr = KeyboardLayout::screenQuadPoint(1.012f, -0.04f);
@@ -314,18 +432,62 @@ private:
             g.FillPath(&bb, &lp);
             g.DrawPath(&bp, &lp);
         }
+        GraphicsPath deckPath;
+        addQuadPoly(deckPath, tl, tr, br, bl);
         {
-            GraphicsPath tp;
-            addQuadPoly(tp, tl, tr, br, bl);
             SolidBrush db(deckCol);
             Pen dp(deckCol, 2.0f); dp.SetLineJoin(LineJoinRound);
-            g.FillPath(&db, &tp);
-            g.DrawPath(&dp, &tp);
+            g.FillPath(&db, &deckPath);
+            g.DrawPath(&dp, &deckPath);
+        }
+
+        // MARK: - Marquee backlight
+        // A comet of light sweeps diagonally under the keycaps: bright head, long fading tail.
+        Color glowCol = eyePrimary(eyeTheme, 215);
+        float mqHead = physics.marqueePhase - std::floor(physics.marqueePhase);
+        // One full hue cycle per sweep, so the deck reads as RGB backlight rather than paint.
+        Color mqCol = hsvColor(mqHead + 0.52f, 0.55f, 1.0f);
+        auto mqWave = [mqHead, marquee](float t) {
+            if (!marquee) return 0.0f;
+            float d = mqHead - t;
+            if (d < 0.0f) d += 1.0f;
+            return std::exp(-d / 0.125f);
+        };
+        float bandDx = br.x - tl.x, bandDy = br.y - tl.y;
+        float bandLen2 = bandDx * bandDx + bandDy * bandDy;
+        if (marquee) {
+            GraphicsState mqState = g.Save();
+            g.SetClip(&deckPath);
+            const int kN = 24;
+            Color mqColors[kN];
+            REAL mqPos[kN];
+            for (int i = 0; i < kN; ++i) {
+                float t = (float)i / (float)(kN - 1);
+                mqPos[i] = t;
+                mqColors[i] = Color((BYTE)std::clamp(mqWave(t) * 200.0f, 0.0f, 255.0f),
+                                    mqCol.GetR(), mqCol.GetG(), mqCol.GetB());
+            }
+            LinearGradientBrush band(PointF(tl.x, tl.y), PointF(br.x, br.y), Color(0, 0, 0, 0), Color(0, 0, 0, 0));
+            band.SetInterpolationColors(mqColors, mqPos, kN);
+            g.FillPath(&band, &deckPath);
+
+            // White-hot lamp at the head of the comet, clipped to the deck.
+            Pt head = { tl.x + bandDx * mqHead, tl.y + bandDy * mqHead };
+            float hr = 44.0f;
+            GraphicsPath hp;
+            hp.AddEllipse(head.x - hr, head.y - hr, hr * 2.0f, hr * 2.0f);
+            PathGradientBrush hb(&hp);
+            hb.SetCenterPoint(PointF(head.x, head.y));
+            hb.SetCenterColor(Color(150, 240, 252, 255));
+            Color hSurr[1] = { Color(0, mqCol.GetR(), mqCol.GetG(), mqCol.GetB()) };
+            INT hCnt = 1;
+            hb.SetSurroundColors(hSurr, &hCnt);
+            g.FillPath(&hb, &hp);
+            g.Restore(mqState);
         }
 
         constexpr float padU = 0.0028f;
         constexpr float padV = 0.014f;
-        Color glowCol = eyePrimary(eyeTheme, 215);
         Pen keyBorderPen(borderCol, 0.65f);
         FontFamily kbFF(L"Segoe UI");
         StringFormat kbSF;
@@ -349,14 +511,47 @@ private:
             Pt kBR = KeyboardLayout::screenQuadPoint(su1, sv1); kBR.y += dy;
             Pt kBL = KeyboardLayout::screenQuadPoint(su0, sv1); kBL.y += dy;
 
+            // Where this keycap sits along the marquee axis, and how bright the comet makes it.
+            float kcx = (kTL.x + kTR.x + kBR.x + kBL.x) * 0.25f;
+            float kcy = (kTL.y + kTR.y + kBR.y + kBL.y) * 0.25f;
+            float kt = std::clamp(((kcx - tl.x) * bandDx + (kcy - tl.y) * bandDy) / bandLen2, 0.0f, 1.0f);
+            float mq = mqWave(kt);
+
             GraphicsPath kp;
             addQuadPoly(kp, kTL, kTR, kBR, kBL);
             Color fill = cap.isAmberAccent ? accentCol : keyCol;
+            if (mq > 0.015f) {
+                // Head of the comet reads hot (near white), the trailing keys stay saturated.
+                Color lit = blendColor(mqCol, Color(255, 255, 255, 255), mq * mq * 0.5f);
+                fill = blendColor(fill, lit, std::clamp(mq * 0.88f, 0.0f, 0.9f));
+            }
             if (glow > 0.02f) fill = blendColor(fill, glowCol, glow * 0.55f);
 
             SolidBrush kb(fill);
             g.FillPath(&kb, &kp);
-            g.DrawPath(&keyBorderPen, &kp);
+            if (mq > 0.10f) {
+                Pen litPen(Color((BYTE)std::clamp(mq * 215.0f, 0.0f, 215.0f),
+                                 mqCol.GetR(), mqCol.GetG(), mqCol.GetB()), 1.0f);
+                g.DrawPath(&litPen, &kp);
+            } else {
+                g.DrawPath(&keyBorderPen, &kp);
+            }
+
+            // Under-key bloom where the beam is hottest, so the light spills between caps.
+            if (mq > 0.45f) {
+                float bloom = (mq - 0.45f) / 0.55f;
+                float br2 = 15.0f;
+                GraphicsPath bp;
+                bp.AddEllipse(kcx - br2, kcy - br2 * 0.7f, br2 * 2.0f, br2 * 1.4f);
+                PathGradientBrush pb(&bp);
+                pb.SetCenterPoint(PointF(kcx, kcy));
+                pb.SetCenterColor(Color((BYTE)std::clamp(bloom * 135.0f, 0.0f, 135.0f),
+                                        mqCol.GetR(), mqCol.GetG(), mqCol.GetB()));
+                Color bSurr[1] = { Color(0, mqCol.GetR(), mqCol.GetG(), mqCol.GetB()) };
+                INT bCnt = 1;
+                pb.SetSurroundColors(bSurr, &bCnt);
+                g.FillPath(&pb, &bp);
+            }
 
             if (showLegends) {
                 bool isSpace = (cap.key == PhysicalKey::Space);
@@ -411,14 +606,30 @@ private:
         using namespace Gdiplus;
         float p = physics.tailPhase;
         float hunt = std::clamp(physics.huntIntensity.value, 0.0f, 1.0f);
-        float wag1 = std::sin(p) * (8.0f + hunt * 5.5f);
-        float wag2 = std::cos(p * 1.3f) * (6.0f + hunt * 4.5f);
+        float agility = std::clamp(physics.tailAgility.value, 0.0f, 1.0f);
+        float wag1 = std::sin(p) * (8.0f + hunt * 5.5f + agility * 4.0f);
+        float wag2 = std::cos(p * 1.3f) * (6.0f + hunt * 4.5f + agility * 3.5f);
         float huntDrop = hunt * 14.0f;
 
+        float reach = std::clamp(physics.tailTyping.value, 0.0f, 1.0f);
+        float flickScale = 1.0f - reach;
+        Pt flick = physics.tailFlick.point();
+        float fx = flick.x * flickScale;
+        float fy = flick.y * flickScale;
+        float curl = physics.tailCurl.value * flickScale;
+
         PointF root(seatX + 34.0f, seatY - 6.0f);
-        PointF c1(seatX + 64.0f, seatY + 2.0f + wag1 * 0.35f + huntDrop * 0.4f);
-        PointF c2(seatX + 66.0f + wag2 * 0.4f, seatY - 26.0f + wag1 * 0.7f + huntDrop);
-        PointF tip(seatX + 91.0f + wag2 * 0.5f, seatY - 30.0f + wag1 * 0.85f + huntDrop);
+        PointF c1(seatX + 64.0f + fx * 0.25f, seatY + 2.0f + wag1 * 0.35f + huntDrop * 0.4f + fy * 0.22f + curl * 0.35f);
+        PointF c2(seatX + 66.0f + wag2 * 0.4f + fx * 0.65f - curl * 0.45f, seatY - 26.0f + wag1 * 0.7f + huntDrop + fy * 0.60f - curl * 0.55f);
+        PointF tip(seatX + 91.0f + wag2 * 0.5f + fx, seatY - 30.0f + wag1 * 0.85f + huntDrop + fy);
+
+        Pt target = physics.tailTip.point();
+        c1.X += 12.0f * reach;
+        c1.Y -= 18.0f * reach;
+        c2.X += (target.x + 24.0f - c2.X) * reach;
+        c2.Y += (target.y - 30.0f - c2.Y) * reach;
+        tip.X += (target.x - tip.X) * reach;
+        tip.Y += (target.y - tip.Y) * reach;
 
         Pen tailPen(earTailColor(coat), coat == CatCoatTheme::Siamese ? 9.5f : 11.0f);
         tailPen.SetStartCap(LineCapRound);
@@ -562,6 +773,12 @@ private:
         if (coat != CatCoatTheme::Siamese) {
             SolidBrush b(bodyColor(coat));
             g.FillPath(&b, &path);
+            if (coat==CatCoatTheme::OrangeWhite) {
+                GraphicsPath join;
+                join.AddBezier(lCheek,H(leftCheekX-1.5f,-14.0f),H(-26.0f+cheekShift*0.3f,-30.0f+crownDrop),crown);
+                join.AddBezier(crown,H(26.0f+cheekShift*0.3f,-30.0f+crownDrop),H(rightCheekX+1.5f,-14.0f),rCheek);
+                Pen fur(earTailColor(coat),1.0f);fur.SetStartCap(LineCapRound);fur.SetEndCap(LineCapRound);g.DrawPath(&fur,&join);
+            }
             if (patterned(coat)) {
                 GraphicsState cs = g.Save(); g.SetClip(&path, CombineModeIntersect);
                 drawCoatMarks(g, seatX, seatY, headCenter, physics, coat); g.Restore(cs);
@@ -571,15 +788,12 @@ private:
             g.SetClip(&path);
 
             LinearGradientBrush bodyGrad(
-                PointF(seatX, headCenter.y - 54.0f),
-                PointF(seatX, seatY + 38.0f),
+                PointF(seatX, headCenter.y - 34.0f),
+                PointF(seatX, seatY + 18.0f),
                 siameseCream(),
                 siameseLatte()
             );
             bodyGrad.SetWrapMode(WrapModeTileFlipXY);
-            Color bodyCols[4] = { siameseCream(), siameseCream(), siameseLatte(), siameseLatte() };
-            REAL bodyPos[4] = { 0.0f, 0.22f, 0.80f, 1.0f };
-            bodyGrad.SetInterpolationColors(bodyCols, bodyPos, 4);
             g.FillPath(&bodyGrad, &path);
 
             // 2.5D Rotating Seal-Point "挖煤" Face Mask!
@@ -689,15 +903,101 @@ private:
             np.CloseFigure();
             SolidBrush nb(Color(242, 36, 23, 20));
             g.FillPath(&nb, &np);
-            GraphicsPath mp;
-            addQuadBezier(mp, mL, { (mL.x + mM.x) * 0.5f, mL.y + 1.6f }, mM);
-            addQuadBezier(mp, mM, { (mM.x + mR.x) * 0.5f, mR.y + 1.6f }, mR);
-            Pen mpen(Color(140, 199, 168, 143), 1.05f);
-            mpen.SetStartCap(LineCapRound); mpen.SetEndCap(LineCapRound);
-            g.DrawPath(&mpen, &mp);
+            if (physics.yawnAmount < 0.15f) {
+                GraphicsPath mp;
+                addQuadBezier(mp, mL, { (mL.x + mM.x) * 0.5f, mL.y + 1.6f }, mM);
+                addQuadBezier(mp, mM, { (mM.x + mR.x) * 0.5f, mR.y + 1.6f }, mR);
+                Pen mpen(Color(140, 199, 168, 143), 1.05f);
+                mpen.SetStartCap(LineCapRound); mpen.SetEndCap(LineCapRound);
+                g.DrawPath(&mpen, &mp);
+            }
         }
+        if (patterned(coat)) drawPatternedMuzzle(g, yawRad, pitchRad);
+        if (physics.yawnAmount > 0.03f) drawYawnMouth(g, yawRad, pitchRad, physics.yawnAmount, coat);
         drawWhiskers3D(g, yawRad, pitchRad, physics, coat);
         g.Restore(st);
+    }
+
+    static void drawYawnMouth(Gdiplus::Graphics& g, float yawRad, float pitchRad, float yawn, CatCoatTheme coat) {
+        using namespace Gdiplus;
+        float y = std::clamp(yawn, 0.0f, 1.0f);
+        Pt c = projectHead3D(0.0f, 16.2f + y * 2.2f, 30.2f, yawRad, pitchRad);
+        float rx = 3.2f + y * 5.8f;
+        float ry = 1.6f + y * 7.4f;
+
+        GraphicsState st = g.Save();
+        g.TranslateTransform(c.x, c.y);
+
+        GraphicsPath mouth;
+        mouth.AddBezier(0.0f, -ry * 0.92f, rx * 0.68f, -ry * 0.92f, rx * 1.05f, -ry * 0.42f, rx, ry * 0.08f);
+        mouth.AddBezier(rx, ry * 0.08f, rx * 0.95f, ry * 0.72f, rx * 0.50f, ry, 0.0f, ry);
+        mouth.AddBezier(0.0f, ry, -rx * 0.50f, ry, -rx * 0.95f, ry * 0.72f, -rx, ry * 0.08f);
+        mouth.AddBezier(-rx, ry * 0.08f, -rx * 1.05f, -ry * 0.42f, -rx * 0.68f, -ry * 0.92f, 0.0f, -ry * 0.92f);
+        mouth.CloseFigure();
+
+        SolidBrush bgBrush(Color(250, 199, 48, 64));
+        g.FillPath(&bgBrush, &mouth);
+
+        GraphicsState cs = g.Save();
+        g.SetClip(&mouth, CombineModeIntersect);
+
+        SolidBrush shadowBrush(Color(140, 140, 26, 41));
+        g.FillEllipse(&shadowBrush, -rx * 0.65f, -ry * 0.72f, rx * 1.30f, ry * 0.92f);
+
+        if (y > 0.22f) {
+            float tAlpha = std::min(1.0f, (y - 0.22f) / 0.35f);
+            SolidBrush tongueBrush(Color((BYTE)(235 * tAlpha), 242, 122, 140));
+            GraphicsPath tongue;
+            addQuadBezier(tongue, { -rx * 0.62f, ry * 0.55f }, { -rx * 0.32f, ry * 0.16f }, { 0.0f, ry * 0.36f });
+            addQuadBezier(tongue, { 0.0f, ry * 0.36f }, { rx * 0.32f, ry * 0.16f }, { rx * 0.62f, ry * 0.55f });
+            addQuadBezier(tongue, { rx * 0.62f, ry * 0.55f }, { 0.0f, ry * 1.25f }, { -rx * 0.62f, ry * 0.55f });
+            tongue.CloseFigure();
+            g.FillPath(&tongueBrush, &tongue);
+        }
+
+        if (y > 0.28f) {
+            float fScale = std::min(1.0f, (y - 0.28f) / 0.32f);
+            SolidBrush fangBrush(Color(250, 255, 252, 245));
+            float uBaseY = -ry * 0.80f;
+            float uLen = (2.6f + y * 2.2f) * fScale;
+            float uHW = (1.15f + y * 0.55f) * fScale;
+            for (float sign : { -1.0f, 1.0f }) {
+                float fx = sign * rx * 0.46f;
+                PointF pts[3] = { { fx - uHW, uBaseY - 0.8f }, { fx + uHW, uBaseY - 0.8f }, { fx - sign * 0.25f, uBaseY + uLen } };
+                g.FillPolygon(&fangBrush, pts, 3);
+            }
+            float lBaseY = ry * 0.84f;
+            float lLen = (1.6f + y * 1.3f) * fScale;
+            float lHW = (0.85f + y * 0.35f) * fScale;
+            for (float sign : { -1.0f, 1.0f }) {
+                float fx = sign * rx * 0.36f;
+                PointF pts[3] = { { fx - lHW, lBaseY + 0.8f }, { fx + lHW, lBaseY + 0.8f }, { fx - sign * 0.15f, lBaseY - lLen } };
+                g.FillPolygon(&fangBrush, pts, 3);
+            }
+        }
+        g.Restore(cs);
+
+        Pen rimPen((coat == CatCoatTheme::ClassicBlack || coat == CatCoatTheme::Siamese)
+            ? Color(216, 107, 20, 31) : Color(184, 143, 56, 66), 1.0f);
+        g.DrawPath(&rimPen, &mouth);
+        g.Restore(st);
+    }
+
+    static void drawPatternedMuzzle(Gdiplus::Graphics& g, float yawRad, float pitchRad) {
+        using namespace Gdiplus;
+        const Pt local[] = {{-2.90f, 8.50f}, {-1.80f, 8.10f}, {1.80f, 8.10f}, {2.90f, 8.50f}, {3.20f, 8.90f}, {0.80f, 12.10f}, {0.00f, 12.30f}, {-0.80f, 12.10f}, {-3.20f, 8.90f}, {-2.90f, 8.50f}, {-5.90f, 14.40f}, {-4.70f, 18.00f}, {-1.40f, 18.00f}, {0.00f, 14.30f}, {1.40f, 18.00f}, {4.70f, 18.00f}, {5.90f, 14.40f}, {0.00f, 12.00f}};
+        Pt p[18];
+        for (int i=0;i<18;++i) p[i]=projectHead3D(local[i].x,local[i].y,30.0f,yawRad,pitchRad);
+        GraphicsPath nose;
+        nose.AddBezier(p[0].x,p[0].y,p[1].x,p[1].y,p[2].x,p[2].y,p[3].x,p[3].y);
+        nose.AddBezier(p[3].x,p[3].y,p[4].x,p[4].y,p[5].x,p[5].y,p[6].x,p[6].y);
+        nose.AddBezier(p[6].x,p[6].y,p[7].x,p[7].y,p[8].x,p[8].y,p[9].x,p[9].y);
+        nose.CloseFigure(); SolidBrush ink(Color(255,217,143,155)); g.FillPath(&ink,&nose);
+        GraphicsPath mouth;
+        mouth.AddLine(p[17].x,p[17].y,p[13].x,p[13].y); mouth.StartFigure();
+        mouth.AddBezier(p[10].x,p[10].y,p[11].x,p[11].y,p[12].x,p[12].y,p[13].x,p[13].y);
+        mouth.AddBezier(p[13].x,p[13].y,p[14].x,p[14].y,p[15].x,p[15].y,p[16].x,p[16].y);
+        Pen pen(Color(199,139,140,134),1.15f); pen.SetStartCap(LineCapRound); pen.SetEndCap(LineCapRound); pen.SetLineJoin(LineJoinRound); g.DrawPath(&pen,&mouth);
     }
 
     static void drawEye3D(Gdiplus::Graphics& g, bool isLeft, float yawRad, float pitchRad, const CatPhysics& physics, EyeColorTheme eyeTheme, CatCoatTheme coat) {
@@ -945,14 +1245,8 @@ private:
         RectF pawRect(end.x - pawR, end.y - pawR * 0.85f, pawR * 2.0f, pawR * 1.7f);
 
         if (coat != CatCoatTheme::Siamese) {
-            SolidBrush b(limbColor(coat));
-            if (patterned(coat)) {
-                LinearGradientBrush gradient(PointF(start.x,start.y),PointF(end.x,end.y),pawColor(coat),limbColor(coat));
-                gradient.SetWrapMode(WrapModeTileFlipXY);
-                Color colors[3]={pawColor(coat),limbColor(coat),limbColor(coat)};
-                REAL positions[3]={0,0.30f,1};gradient.SetInterpolationColors(colors,positions,3);
-                g.FillPath(&gradient,&limbPath);
-            } else g.FillPath(&b, &limbPath);
+            SolidBrush b(patterned(coat) ? pawColor(coat) : limbColor(coat));
+            g.FillPath(&b, &limbPath);
             if (!patterned(coat)) g.FillEllipse(&b, pawRect);
             else {
                 std::vector<PointF> points; int first = (int)(steps*0.72f);
@@ -962,37 +1256,25 @@ private:
                 g.FillPolygon(&cuff, points.data(), (INT)points.size()); g.FillEllipse(&cuff, pawRect);
             }
         } else {
-            // Pad gradient endpoints beyond limb geometry + use WrapModeTileFlipXY so GDI+
-            // NEVER wraps t < 0 shoulder corners around to t = 1.0 dark espresso!
-            float dx = end.x - start.x;
-            float dy = end.y - start.y;
-            float dist = std::hypot(dx, dy);
-            float ux = (dist > 1.0f) ? (dx / dist) : 0.0f;
-            float uy = (dist > 1.0f) ? (dy / dist) : 1.0f;
-            dist = std::max(1.0f, dist);
-            float padStart = startW + 18.0f;
-            float padEnd = endW + 18.0f;
-            float totalLen = padStart + dist + padEnd;
-
-            PointF gStart(start.x - ux * padStart, start.y - uy * padStart);
-            PointF gEnd(end.x + ux * padEnd, end.y + uy * padEnd);
-
+            // Pad gradient endpoints beyond the rounded shoulder cap & paw tip and use
+            // WrapModeTileFlipXY; otherwise GDI+ LinearGradientBrush defaults to WrapModeTile
+            // and wraps pixels behind `start` to the dark `siamesePoint` end stop!
+            float gdx = end.x - start.x, gdy = end.y - start.y;
+            float span = std::max(1.0f, std::hypot(gdx, gdy));
+            float ux = gdx / span, uy = gdy / span;
+            float pad = std::max(startW, endW) + 6.0f;
+            float total = span + pad * 2.0f;
+            PointF gStart(start.x - ux * pad, start.y - uy * pad);
+            PointF gEnd(end.x + ux * pad, end.y + uy * pad);
             LinearGradientBrush grad(gStart, gEnd, siameseCream(0), siamesePoint(255));
             grad.SetWrapMode(WrapModeTileFlipXY);
-            Color cols[6] = {
-                siameseCream(0),
-                siameseCream(0),
-                siameseCream(255),
-                siameseMocha(255),
-                siamesePoint(255),
-                siamesePoint(255)
-            };
+            Color cols[6] = { siameseCream(0), siameseCream(0), siameseCream(255), siameseMocha(255), siamesePoint(255), siamesePoint(255) };
             REAL pos[6] = {
                 0.0f,
-                padStart / totalLen,
-                (padStart + dist * 0.16f) / totalLen,
-                (padStart + dist * 0.48f) / totalLen,
-                (padStart + dist * 0.78f) / totalLen,
+                pad / total,
+                (pad + span * 0.16f) / total,
+                (pad + span * 0.48f) / total,
+                (pad + span) / total,
                 1.0f
             };
             grad.SetInterpolationColors(cols, pos, 6);
