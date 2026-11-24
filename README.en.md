@@ -30,7 +30,7 @@
 - **🐾 Fun Interactive Details**
   - **3-Key "Hind Paw Press"**: Hold 3 or more keys simultaneously and the cat lifts its hind paw to press the 3rd key!
   - **Head / Back Petting**: Gently stroke the cat's head with your cursor to trigger cozy closed eyes `— —` and shimmer particles; leave it idle and it falls asleep with floating `z`s.
-  - **Smart Click-Through, Launch at Login & Auto Update Check**: Transparent areas pass clicks through automatically. Toggle **Full Click-Through (Gaming Anti-Misclick)** anytime, enable **Launch at Login** (Windows Registry / macOS LaunchAgent / Linux XDG Autostart), and get automatic update notifications in the menu bar / tray.
+  - **Smart Click-Through and Launch at Login**. Transparent areas pass clicks through automatically. You can enable **Full Click-Through (Gaming Anti-Misclick)** and **Launch at Login** on Windows, macOS, and Linux.
 - **🎨 4 Skins & Custom Color Combinations**
   - **Cat Skins**: Classic Black Cat (neon yellow-green eyes) / Siamese Cat (warm oat cream + 2.5D caramel mask + chocolate socks + sapphire blue eyes) / American Shorthair (silver tabby & white) / Orange & White Cat (orange crown + white chest & mittens)
   - **Keyboard Themes**: Classic Warm Cream / Midnight Geek Black / Retro Cream Gray (toggle key labels, key bubbles, and mouse click bubbles)
@@ -135,7 +135,7 @@ KuroCat/
 
 ## 🔒 Privacy
 
-All keyboard and mouse hardware signals in KuroCat are processed **strictly in local memory in real time** to drive animations and counters—**no keystrokes are ever logged or saved**. Aside from checking the official release endpoint for new versions on startup or when manually clicking "Check for Updates", KuroCat makes no network requests. The entire codebase is open source and auditable.
+KuroCat processes keyboard and mouse hardware signals **in local memory in real time** to drive animations and counters. Keystroke contents stay out of logs and storage. On Linux, the app checks the official release endpoint at startup and when you select **Check for Updates**. The entire codebase is open source and auditable.
 
 ## 📄 License
 

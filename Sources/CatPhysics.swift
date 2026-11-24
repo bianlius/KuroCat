@@ -15,6 +15,9 @@ enum CatCoatTheme: String, CaseIterable {
     case siamese = "挖煤暹罗猫"
     case shorthair = "美短（银虎斑加白）"
     case orangeWhite = "橘白猫"
+    case doraemon = "哆啦A梦"
+
+    var supportsFootEasterEgg: Bool { self != .doraemon }
 }
 
 enum EyeColorTheme: String, CaseIterable {
@@ -511,7 +514,8 @@ final class CatPhysics {
         }
 
         // 3+ simultaneous keys (or 2+ keys while other hand is busy on the mouse!) -> HIND FOOT EASTER EGG!!
-        if CatSettings.shared.footEasterEgg {
+        let supportsFootEasterEgg = CatSettings.shared.coatTheme.supportsFootEasterEgg
+        if supportsFootEasterEgg, CatSettings.shared.footEasterEgg {
             if orderedKeys.count >= 3 {
                 footKey = orderedKeys.first { $0 != leftKey && $0 != rightKey }
             } else if mouseActivelyUsed && leftKey == nil && rightCandidates.count >= 2 {
@@ -667,7 +671,7 @@ final class CatPhysics {
         eyeGaze.step(dt: dt, stiffness: 210 + hunt * 80, damping: 21)
 
         // Pupil dilation
-        if hindFootActive.value > 0.3 {
+        if supportsFootEasterEgg, hindFootActive.value > 0.3 {
             pupilScale.target = 1.24
         } else if now - curLastKeyTime > 0.45 && now - curLastMouseClick > 0.45 {
             pupilScale.target = 1.0

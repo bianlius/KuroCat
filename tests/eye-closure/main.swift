@@ -21,7 +21,8 @@ func render(_ original: Bool, _ coat: CatCoatTheme, _ closure: CGFloat, _ left: 
 }
 let baseline = render(false,.classicBlack,-1,true)
 var oldFringe = 0
-for coat in CatCoatTheme.allCases {
+let catCoats = CatCoatTheme.allCases.filter { $0 != .doraemon }
+for coat in catCoats {
     for left in [true,false] {
         for closure: CGFloat in [0,0.25,0.5,0.92,1] {
             let new = render(false,coat,closure,left)
@@ -42,7 +43,7 @@ for coat in CatCoatTheme.allCases {
         }
     }
 }
-for coat in CatCoatTheme.allCases {
+for coat in catCoats {
     for theme in EyeColorTheme.allCases {
         for left in [true,false] {
             precondition(render(false,coat,1,left,theme) == baseline,"Closed iris leaves pixels: \(theme)")

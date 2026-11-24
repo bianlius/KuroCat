@@ -13,12 +13,10 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
-#include <winhttp.h>
 #include <objidl.h>
 #include <gdiplus.h>
 #include <wtsapi32.h>
 #include <string>
-#include <vector>
 #include <cmath>
 #include <cwchar>
 #include <algorithm>
@@ -27,22 +25,11 @@
 #include "CatPhysics.hpp"
 #include "CatRenderer.hpp"
 
-#ifndef WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
-#define WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY 4
-#endif
-#ifndef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_1
-#define WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_1 0x00000200
-#endif
-#ifndef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2
-#define WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 0x00000800
-#endif
-
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "advapi32.lib")
-#pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "wtsapi32.lib")
 
 namespace {
@@ -52,12 +39,8 @@ constexpr const wchar_t* VERSION_PROP = L"KuroCatVersion"; // set on the tray ow
 constexpr const wchar_t* TRAY_OWNER_CLASS = L"KuroCatTrayOwnerClass";
 constexpr const wchar_t* OVERLAY_CLASS = L"KuroCatOverlayWindowClass";
 constexpr double FRAME_INTERVAL = 1.0 / 60.0;
-constexpr const wchar_t* UPDATE_PAGE_URL = L"https://kurocat-download.app.workbuddy.host/?sharecode=JVAABIVZ7L";
-constexpr const wchar_t* UPDATE_WIN_EXE_PATH = L"/downloads/KuroCat-Windows-x64.exe?sharecode=JVAABIVZ7L";
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 constexpr UINT WM_WAKE_EXISTING = WM_APP + 2;
-constexpr UINT WM_UPDATE_CHECK_DONE = WM_APP + 3;
-constexpr UINT WM_UPDATE_DOWNLOAD_DONE = WM_APP + 4;
 constexpr UINT WM_REQUEST_QUIT = WM_APP + 5; // posted by a newer / elevated instance that is taking over
 constexpr UINT_PTR TIMER_RENDER = 1;
 constexpr int HOTKEY_CLICKTHROUGH_ID = 101;
@@ -93,8 +76,6 @@ enum MenuCmd : UINT {
     CMD_SCALE_150,
     CMD_DEMO_BURST,
     CMD_RESET_POS,
-    CMD_CHECK_UPDATE,
-    CMD_OPEN_UPDATE,
     CMD_RELAUNCH_ADMIN,
     CMD_TOGGLE_RUN_AS_ADMIN,
     CMD_QUIT
@@ -129,10 +110,6 @@ struct AppState {
     bool demoActive = false;
     double demoStartTime = 0.0;
     int demoStepIdx = 0;
-
-    std::wstring availableUpdateVersion;
-    std::wstring availableUpdateUrl;
-    bool isUpdating = false;
 
     // Robustness against games, Win+L, sleep and display changes
     double nextFrameTime = 0.0;
@@ -309,69 +286,6 @@ bool isForegroundFullscreen() {
            wr.right >= mi.rcMonitor.right && wr.bottom >= mi.rcMonitor.bottom;
 }
 
-// MARK: - Auto Update Checker (GitHub Releases via WinHTTP)
-
-struct UpdateCheckResult {
-    bool ok = false;
-    bool manual = false;
-    bool hasUpdate = false;
-    std::wstring latestTag;
-    std::wstring releaseUrl;
-};
-
-std::wstring utf8ToWide(const std::string& s) {
-    if (s.empty()) return L"";
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
-    if (n <= 0) return L"";
-    std::wstring w(n, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], n);
-    return w;
-}
-
-std::string extractJsonStringField(const std::string& json, const char* fieldName) {
-    std::string key = std::string("\"") + fieldName + "\"";
-    size_t pos = json.find(key);
-    if (pos == std::string::npos) return "";
-    pos = json.find(':', pos + key.size());
-    if (pos == std::string::npos) return "";
-    pos = json.find('"', pos + 1);
-    if (pos == std::string::npos) return "";
-    size_t end = json.find('"', pos + 1);
-    if (end == std::string::npos) return "";
-    return json.substr(pos + 1, end - pos - 1);
-}
-
-bool isSemVerNewer(const std::wstring& lhs, const std::wstring& rhs) {
-    auto parse = [](const std::wstring& v) {
-        std::vector<int> parts;
-        size_t i = 0;
-        while (i < v.size() && (v[i] == L'v' || v[i] == L'V' || v[i] == L' ')) i++;
-        int cur = 0; bool inNum = false;
-        for (; i < v.size(); ++i) {
-            if (v[i] >= L'0' && v[i] <= L'9') {
-                cur = cur * 10 + (v[i] - L'0');
-                inNum = true;
-            } else if (v[i] == L'.') {
-                parts.push_back(inNum ? cur : 0);
-                cur = 0; inNum = false;
-            } else {
-                break;
-            }
-        }
-        if (inNum) parts.push_back(cur);
-        return parts;
-    };
-    auto a = parse(lhs);
-    auto b = parse(rhs);
-    size_t n = std::max(a.size(), b.size());
-    for (size_t i = 0; i < n; ++i) {
-        int va = i < a.size() ? a[i] : 0;
-        int vb = i < b.size() ? b[i] : 0;
-        if (va != vb) return va > vb;
-    }
-    return false;
-}
-
 /// "1.3.3" -> 10303. Stored as a window property so a newly launched (newer) build can tell
 /// which version is already running. Builds up to 1.3.2 never set it, which reads back as 0.
 int versionToNumber(const std::wstring& v) {
@@ -382,94 +296,6 @@ int versionToNumber(const std::wstring& v) {
         else if (c == L'.') { if (++idx >= 3) break; }
     }
     return parts[0] * 10000 + parts[1] * 100 + parts[2];
-}
-
-std::wstring currentExePath() {
-    wchar_t buf[MAX_PATH * 2] = {};
-    DWORD len = GetModuleFileNameW(nullptr, buf, (DWORD)(sizeof(buf) / sizeof(buf[0]) - 1));
-    return std::wstring(buf, len);
-}
-
-std::string extractVersionFromHtml(const std::string& html) {
-    auto parseVerAt = [&](size_t pos) -> std::string {
-        if (pos >= html.size() || (html[pos] != 'v' && html[pos] != 'V')) return "";
-        size_t i = pos + 1;
-        int dots = 0;
-        std::string ver = "v";
-        while (i < html.size()) {
-            char c = html[i];
-            if (c >= '0' && c <= '9') {
-                ver.push_back(c);
-            } else if (c == '.') {
-                dots++;
-                ver.push_back(c);
-            } else {
-                break;
-            }
-            i++;
-        }
-        return (dots >= 2 && ver.size() > 5) ? ver : "";
-    };
-
-    const char* marker = "\xE5\xB7\xB2\xE5\x8F\x91\xE5\xB8\x83"; // "已发布" in UTF-8
-    size_t mPos = html.find(marker);
-    if (mPos != std::string::npos) {
-        size_t searchStart = (mPos > 32) ? (mPos - 32) : 0;
-        for (size_t i = mPos; i > searchStart; --i) {
-            if (html[i - 1] == 'v' || html[i - 1] == 'V') {
-                std::string v = parseVerAt(i - 1);
-                if (!v.empty()) return v;
-            }
-        }
-    }
-
-    const char* verPrefix = "\xE7\x89\x88\xE6\x9C\xAC "; // "版本 " in UTF-8
-    size_t vPos = html.find(verPrefix);
-    if (vPos != std::string::npos) {
-        std::string v = parseVerAt(vPos + 7);
-        if (!v.empty()) return v;
-    }
-    return "";
-}
-
-std::string fetchWorkBuddyPath(HINTERNET hConnect, LPCWSTR path) {
-    std::string body;
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path, nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-    if (hRequest) {
-        if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-            WinHttpReceiveResponse(hRequest, nullptr)) {
-            DWORD statusCode = 0, statusSize = sizeof(statusCode);
-            WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
-            if (statusCode >= 200 && statusCode < 300) {
-                DWORD avail = 0;
-                while (WinHttpQueryDataAvailable(hRequest, &avail) && avail > 0) {
-                    std::vector<char> buf(avail);
-                    DWORD readBytes = 0;
-                    if (WinHttpReadData(hRequest, buf.data(), avail, &readBytes) && readBytes > 0) {
-                        body.append(buf.data(), readBytes);
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
-        WinHttpCloseHandle(hRequest);
-    }
-    return body;
-}
-
-HINTERNET openWinHttpSession(const std::wstring& ua) {
-    // Windows 8.1+ supports AUTOMATIC_PROXY; Windows 7 requires DEFAULT_PROXY.
-    HINTERNET hSession = WinHttpOpen(ua.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSession) {
-        hSession = WinHttpOpen(ua.c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    }
-    if (hSession) {
-        // Enable TLS 1.2 explicitly for Windows 7 SP1 (KB3140245) compatibility
-        DWORD protos = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_1 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1;
-        WinHttpSetOption(hSession, WINHTTP_OPTION_SECURE_PROTOCOLS, &protos, sizeof(protos));
-    }
-    return hSession;
 }
 
 void enableBestDpiAwareness() {
@@ -494,197 +320,6 @@ void enableBestDpiAwareness() {
         using SetSysDpiFn = BOOL(WINAPI*)();
         auto fn = reinterpret_cast<SetSysDpiFn>(GetProcAddress(hUser32, "SetProcessDPIAware"));
         if (fn) fn();
-    }
-}
-
-struct UpdateCheckThreadParams {
-    HWND notifyHwnd;
-    bool manual;
-    int delayMs;
-};
-
-DWORD WINAPI updateCheckThreadProc(LPVOID param) {
-    auto* p = static_cast<UpdateCheckThreadParams*>(param);
-    HWND notifyHwnd = p->notifyHwnd;
-    bool manual = p->manual;
-    int delayMs = p->delayMs;
-    delete p;
-
-    if (delayMs > 0) Sleep((DWORD)delayMs);
-    auto* res = new UpdateCheckResult();
-    res->manual = manual;
-
-    std::wstring ua = std::wstring(L"KuroCat/") + APP_VERSION;
-    HINTERNET hSession = openWinHttpSession(ua);
-    if (hSession) {
-        WinHttpSetTimeouts(hSession, 8000, 8000, 8000, 8000);
-        HINTERNET hConnect = WinHttpConnect(hSession, L"kurocat-download.app.workbuddy.host", INTERNET_DEFAULT_HTTPS_PORT, 0);
-        if (hConnect) {
-            std::string body = fetchWorkBuddyPath(hConnect, L"/version.json?sharecode=JVAABIVZ7L");
-            std::string tag = extractJsonStringField(body, "tag_name");
-            std::string url = extractJsonStringField(body, "html_url");
-
-            if (tag.empty()) {
-                std::string html = fetchWorkBuddyPath(hConnect, L"/?sharecode=JVAABIVZ7L");
-                tag = extractVersionFromHtml(html);
-            }
-
-            if (!tag.empty()) {
-                res->ok = true;
-                res->latestTag = utf8ToWide(tag);
-                res->releaseUrl = url.empty() ? UPDATE_PAGE_URL : utf8ToWide(url);
-                res->hasUpdate = isSemVerNewer(res->latestTag, APP_VERSION);
-            }
-            WinHttpCloseHandle(hConnect);
-        }
-        WinHttpCloseHandle(hSession);
-    }
-
-    if (!PostMessageW(notifyHwnd, WM_UPDATE_CHECK_DONE, 0, reinterpret_cast<LPARAM>(res))) {
-        delete res;
-    }
-    return 0;
-}
-
-void startAsyncUpdateCheck(HWND notifyHwnd, bool manual, int delayMs = 0) {
-    auto* params = new UpdateCheckThreadParams{ notifyHwnd, manual, delayMs };
-    HANDLE hThread = CreateThread(nullptr, 0, updateCheckThreadProc, params, 0, nullptr);
-    if (hThread) {
-        CloseHandle(hThread);
-    } else {
-        delete params;
-    }
-}
-
-struct UpdateDownloadResult {
-    bool ok = false;
-    std::wstring batPath;
-};
-
-DWORD WINAPI updateDownloadThreadProc(LPVOID param) {
-    HWND notifyHwnd = reinterpret_cast<HWND>(param);
-    auto* res = new UpdateDownloadResult();
-    std::string exeBytes;
-
-    std::wstring ua = std::wstring(L"KuroCat/") + APP_VERSION;
-    HINTERNET hSession = openWinHttpSession(ua);
-        if (hSession) {
-            WinHttpSetTimeouts(hSession, 10000, 10000, 30000, 60000);
-            HINTERNET hConnect = WinHttpConnect(hSession, L"kurocat-download.app.workbuddy.host", INTERNET_DEFAULT_HTTPS_PORT, 0);
-            if (hConnect) {
-                exeBytes = fetchWorkBuddyPath(hConnect, UPDATE_WIN_EXE_PATH);
-                WinHttpCloseHandle(hConnect);
-            }
-            WinHttpCloseHandle(hSession);
-        }
-
-        if (exeBytes.size() > 50000 && exeBytes[0] == 'M' && exeBytes[1] == 'Z') {
-            wchar_t curExe[MAX_PATH] = {};
-            GetModuleFileNameW(nullptr, curExe, MAX_PATH);
-            wchar_t tempDir[MAX_PATH] = {};
-            GetTempPathW(MAX_PATH, tempDir);
-
-            // Keep a real .exe extension so the fallback below can launch it directly.
-            std::wstring curExeStr(curExe);
-            std::wstring newExePath = (curExeStr.size() > 4 && _wcsicmp(curExeStr.c_str() + curExeStr.size() - 4, L".exe") == 0)
-                ? curExeStr.substr(0, curExeStr.size() - 4) + L".update.exe"
-                : curExeStr + L".update.exe";
-            HANDLE hNew = CreateFileW(newExePath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (hNew == INVALID_HANDLE_VALUE) {
-                newExePath = std::wstring(tempDir) + L"KuroCat_update.exe";
-                hNew = CreateFileW(newExePath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-            }
-            if (hNew != INVALID_HANDLE_VALUE) {
-                DWORD written = 0;
-                BOOL okWrite = WriteFile(hNew, exeBytes.data(), (DWORD)exeBytes.size(), &written, nullptr);
-                CloseHandle(hNew);
-                if (okWrite && written == (DWORD)exeBytes.size()) {
-                    std::wstring batPath = std::wstring(tempDir) + L"kurocat_update.bat";
-                    DWORD pid = GetCurrentProcessId();
-                    std::string batUtf8 = "@echo off\r\n:wait\r\n"
-                        "tasklist /FI \"PID eq " + std::to_string(pid) + "\" 2>nul | find \"" + std::to_string(pid) + "\" >nul\r\n"
-                        "if not errorlevel 1 (\r\n"
-                        "  ping -n 2 127.0.0.1 >nul\r\n"
-                        "  goto wait\r\n"
-                        ")\r\n";
-
-                    auto wideToUtf8 = [](const std::wstring& w) -> std::string {
-                        if (w.empty()) return "";
-                        int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
-                        std::string s(n, '\0');
-                        WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
-                        return s;
-                    };
-                    // Use local ANSI codepage for cmd.exe .bat compatibility
-                    auto wideToAcp = [](const std::wstring& w) -> std::string {
-                        if (w.empty()) return "";
-                        int n = WideCharToMultiByte(CP_ACP, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
-                        std::string s(n, '\0');
-                        WideCharToMultiByte(CP_ACP, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
-                        return s;
-                    };
-                    (void)wideToUtf8;
-                    std::string srcAcp = wideToAcp(newExePath);
-                    std::string dstAcp = wideToAcp(curExe);
-
-                    // Per-user fallback location (no admin rights needed) for when the old exe cannot be
-                    // overwritten (read-only folder, antivirus lock...). Previously the move failed silently,
-                    // the OLD exe was restarted and users kept being told a new version was available.
-                    wchar_t localAppData[MAX_PATH] = {};
-                    GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-                    std::wstring fallbackDirW = localAppData[0] ? (std::wstring(localAppData) + L"\\Programs\\KuroCat")
-                                                                : (std::wstring(tempDir) + L"KuroCat");
-                    std::string fbDirAcp = wideToAcp(fallbackDirW);
-                    std::string fbExeAcp = fbDirAcp + "\\KuroCat.exe";
-
-                    batUtf8 += "set /a tries=0\r\n"
-                               ":retry\r\n"
-                               "move /y \"" + srcAcp + "\" \"" + dstAcp + "\" >nul 2>&1\r\n"
-                               "if not errorlevel 1 goto launch\r\n"
-                               "set /a tries+=1\r\n"
-                               "if %tries% lss 15 (\r\n"
-                               "  ping -n 2 127.0.0.1 >nul\r\n"
-                               "  goto retry\r\n"
-                               ")\r\n"
-                               "if not exist \"" + fbDirAcp + "\" mkdir \"" + fbDirAcp + "\"\r\n"
-                               "copy /y \"" + srcAcp + "\" \"" + fbExeAcp + "\" >nul 2>&1\r\n"
-                               "if errorlevel 1 goto launch\r\n"
-                               "del /q \"" + srcAcp + "\" >nul 2>&1\r\n"
-                               "start \"\" \"" + fbExeAcp + "\"\r\n"
-                               "goto done\r\n"
-                               ":launch\r\n"
-                               "start \"\" \"" + dstAcp + "\"\r\n"
-                               ":done\r\n"
-                               "del \"%~f0\"\r\n";
-
-                    HANDLE hBat = CreateFileW(batPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-                    if (hBat != INVALID_HANDLE_VALUE) {
-                        DWORD bw = 0;
-                        BOOL okBat = WriteFile(hBat, batUtf8.data(), (DWORD)batUtf8.size(), &bw, nullptr);
-                        CloseHandle(hBat);
-                        if (okBat && bw == (DWORD)batUtf8.size()) {
-                            res->ok = true;
-                            res->batPath = batPath;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!PostMessageW(notifyHwnd, WM_UPDATE_DOWNLOAD_DONE, 0, reinterpret_cast<LPARAM>(res))) {
-            delete res;
-        }
-    return 0;
-}
-
-void startInAppUpdate(AppState& app) {
-    if (app.isUpdating || !app.menuOwnerHwnd) return;
-    app.isUpdating = true;
-    HANDLE hThread = CreateThread(nullptr, 0, updateDownloadThreadProc, app.menuOwnerHwnd, 0, nullptr);
-    if (hThread) {
-        CloseHandle(hThread);
-    } else {
-        app.isUpdating = false;
     }
 }
 
@@ -932,15 +567,6 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, CMD_DEMO_BURST, L"\u6F14\u793A\u6253\u5B57\u52A8\u753B");
     AppendMenuW(menu, MF_STRING, CMD_RESET_POS, L"\u91CD\u7F6E\u4F4D\u7F6E\u5230\u53F3\u4E0B\u89D2");
-    if (!app.availableUpdateVersion.empty()) {
-        std::wstring upTxt = app.isUpdating
-            ? (L"\u23F3 \u6B63\u5728\u4E0B\u8F7D\u66F4\u65B0 " + app.availableUpdateVersion + L"...")
-            : (L"\U0001F195 \u53D1\u73B0\u65B0\u7248\u672C " + app.availableUpdateVersion + L" (\u70B9\u51FB\u81EA\u52A8\u66F4\u65B0)");
-        AppendMenuW(menu, MF_STRING | (app.isUpdating ? MF_GRAYED : 0), CMD_OPEN_UPDATE, upTxt.c_str());
-    } else {
-        std::wstring chkTxt = std::wstring(L"\u68C0\u67E5\u66F4\u65B0 (\u5F53\u524D v") + APP_VERSION + L")";
-        AppendMenuW(menu, MF_STRING, CMD_CHECK_UPDATE, chkTxt.c_str());
-    }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, CMD_QUIT, L"\u9000\u51FA KuroCat");
 
@@ -1031,13 +657,6 @@ void showContextMenu(AppState& app, POINT screenPt) {
             app.settings.posY = -99999;
             applyWindowScaleAndPosition(app, false);
             break;
-        case CMD_CHECK_UPDATE:
-            if (app.menuOwnerHwnd) startAsyncUpdateCheck(app.menuOwnerHwnd, true, 0);
-            break;
-        case CMD_OPEN_UPDATE: {
-            startInAppUpdate(app);
-            break;
-        }
         case CMD_RELAUNCH_ADMIN:
             // The elevated copy starts with --takeover and waits for this one to exit.
             if (relaunchSelfElevated(L"--takeover --no-elevate")) quitApp(app);
@@ -1321,59 +940,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
 
-        case WM_UPDATE_CHECK_DONE: {
-            auto* res = reinterpret_cast<UpdateCheckResult*>(lParam);
-            if (res) {
-                if (app && res->ok && res->hasUpdate) {
-                    app->availableUpdateVersion = res->latestTag;
-                    app->availableUpdateUrl = res->releaseUrl;
-                    // Show WHICH exe is running: the usual cause of "I already updated but it still
-                    // says there's a new version" is an old copy (Desktop / autostart) still running.
-                    std::wstring msg = L"\u53D1\u73B0 KuroCat \u65B0\u7248\u672C " + res->latestTag
-                        + L"\n\u5F53\u524D\u7248\u672C\uFF1Av" + APP_VERSION
-                        + L"\n\u5F53\u524D\u8FD0\u884C\u7684\u7A0B\u5E8F\uFF1A" + currentExePath()
-                        + L"\n\n\u5982\u679C\u4F60\u5DF2\u7ECF\u4E0B\u8F7D\u8FC7\u65B0\u7248\uFF0C\u76F4\u63A5\u53CC\u51FB\u65B0\u7248 exe \u5373\u53EF\u81EA\u52A8\u66FF\u6362\u6389\u8FD9\u4E2A\u65E7\u7248\u3002"
-                        + L"\n\n\u662F\u5426\u7ACB\u5373\u5728\u8F6F\u4EF6\u5185\u81EA\u52A8\u4E0B\u8F7D\u5E76\u66F4\u65B0\u91CD\u542F\uFF1F";
-                    if (MessageBoxW(nullptr, msg.c_str(), L"KuroCat \u66F4\u65B0\u63D0\u9192",
-                                    MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST) == IDYES) {
-                        startInAppUpdate(*app);
-                    }
-                } else if (res->manual) {
-                    if (res->ok) {
-                        std::wstring msg = std::wstring(L"\u5F53\u524D\u7248\u672C v") + APP_VERSION + L" \u5DF2\u662F\u6700\u65B0\u7248\u672C\u3002";
-                        MessageBoxW(nullptr, msg.c_str(), L"KuroCat \u68C0\u67E5\u66F4\u65B0", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
-                    } else {
-                        MessageBoxW(nullptr, L"\u65E0\u6CD5\u8FDE\u63A5\u5230\u66F4\u65B0\u670D\u52A1\u5668\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u6216\u68C0\u67E5\u7F51\u7EDC\u3002",
-                                    L"KuroCat \u68C0\u67E5\u66F4\u65B0", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-                    }
-                }
-                delete res;
-            }
-            return 0;
-        }
-
-        case WM_UPDATE_DOWNLOAD_DONE: {
-            auto* res = reinterpret_cast<UpdateDownloadResult*>(lParam);
-            if (res) {
-                if (app) app->isUpdating = false;
-                if (res->ok && !res->batPath.empty()) {
-                    ShellExecuteW(nullptr, L"open", res->batPath.c_str(), nullptr, nullptr, SW_HIDE);
-                    PostQuitMessage(0);
-                } else {
-                    if (MessageBoxW(nullptr,
-                                    L"\u81EA\u52A8\u4E0B\u8F7D\u6216\u66FF\u6362\u5B89\u88C5\u5305\u5931\u8D25\uFF0C\u662F\u5426\u6253\u5F00\u4E0B\u8F7D\u9875\u624B\u52A8\u4E0B\u8F7D\uFF1F",
-                                    L"KuroCat \u81EA\u52A8\u66F4\u65B0", MB_YESNO | MB_ICONWARNING | MB_TOPMOST) == IDYES) {
-                        const wchar_t* url = (app && !app->availableUpdateUrl.empty())
-                            ? app->availableUpdateUrl.c_str()
-                            : UPDATE_PAGE_URL;
-                        ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
-                    }
-                }
-                delete res;
-            }
-            return 0;
-        }
-
         case WM_DESTROY:
             if (hwnd == (app ? app->hwnd : nullptr)) {
                 KillTimer(hwnd, TIMER_RENDER);
@@ -1577,7 +1143,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     // Global shortcut Ctrl+Alt+Shift+P to toggle full click-through anytime!
     if (app.menuOwnerHwnd) {
         RegisterHotKey(app.menuOwnerHwnd, HOTKEY_CLICKTHROUGH_ID, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'P');
-        startAsyncUpdateCheck(app.menuOwnerHwnd, false, 2500);
     }
 
     ShowWindow(app.hwnd, SW_SHOWNOACTIVATE);

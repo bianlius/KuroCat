@@ -53,6 +53,12 @@ enum CatRenderer {
             return .permissionPill
         }
 
+        let keyboardRect = CGRect(x: 58, y: 232, width: 236, height: 64)
+        if CatSettings.shared.coatTheme == .doraemon, DoraemonRenderer.bundled != nil {
+            if let zone = DoraemonRenderer.hitTest(point: p, physics: physics) { return zone }
+            return keyboardRect.contains(p) ? .body : .none
+        }
+
         let cx = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
         let breath = sin(physics.time * 2.1) * 1.6
         let siameseLift: CGFloat = (CatSettings.shared.coatTheme == .siamese) ? -3.0 : 0.0
@@ -73,8 +79,7 @@ enum CatRenderer {
         }
 
         // Mini keyboard & mouse area (allows dragging by grabbing keyboard too)
-        let kbRect = CGRect(x: 58, y: 232, width: 236, height: 64)
-        if kbRect.contains(p) {
+        if keyboardRect.contains(p) {
             return .body
         }
 
@@ -90,15 +95,39 @@ enum CatRenderer {
 
         let settings = CatSettings.shared
         let coat = settings.coatTheme
-        let breath = sin(physics.time * 2.1) * 1.6
-        let seatX = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
-        let seatY = CatPhysics.seatAnchor.y
 
         // 1. Mini White Mouse (left of keyboard)
         drawMouse(in: ctx, physics: physics, theme: settings.keyboardTheme)
 
         // 2. Mini Angled 65% Mechanical Keyboard + Dynamic Keycap Glow
-        drawKeyboard(in: ctx, physics: physics, theme: settings.keyboardTheme, eyeTheme: settings.eyeTheme, showLegends: settings.showKeyLegends)
+        let keyboardDeck = drawKeyboard(in: ctx, physics: physics, theme: settings.keyboardTheme, eyeTheme: settings.eyeTheme, showLegends: settings.showKeyLegends)
+
+        if coat == .doraemon, let renderer = DoraemonRenderer.bundled {
+            renderer.draw(in: ctx, physics: physics, eyeColor: settings.eyeTheme.primaryColor.cgColor, keyboardDeck: keyboardDeck)
+        } else {
+            drawCat(in: ctx, physics: physics, coat: coat, eyeTheme: settings.eyeTheme)
+        }
+
+        // 8. Floating Mechanical Keycap Badges (keyboard + mouse clicks)
+        if !physics.floatingKeycaps.isEmpty {
+            drawFloatingKeycaps(in: ctx, physics: physics)
+        }
+
+        // 9. Subtle Petting Sparkles / Sleep Z
+        drawSparkles(in: ctx, physics: physics, eyeTheme: settings.eyeTheme)
+
+        // 10. Optional non-intrusive Permission Pill if global monitoring not yet granted
+        if showPermissionPill {
+            drawPermissionPill(in: ctx, text: permissionPillText)
+        }
+
+        ctx.restoreGState()
+    }
+
+    private static func drawCat(in ctx: CGContext, physics: CatPhysics, coat: CatCoatTheme, eyeTheme: EyeColorTheme) {
+        let breath = sin(physics.time * 2.1) * 1.6
+        let seatX = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
+        let seatY = CatPhysics.seatAnchor.y
 
         // 3. Cat Tail (behind body)
         drawTail(in: ctx, seatX: seatX, seatY: seatY, physics: physics, coat: coat)
@@ -128,25 +157,10 @@ enum CatRenderer {
         }
 
         // 7. 2.5D Turning Head Features: Luminous Eyes & Whiskers
-        drawHeadFeatures(in: ctx, center: headCenter, physics: physics, eyeTheme: settings.eyeTheme, coat: coat)
+        drawHeadFeatures(in: ctx, center: headCenter, physics: physics, eyeTheme: eyeTheme, coat: coat)
 
         // 8. Front Arms / Paws (over torso & keyboard/mouse with crisp separation outlines / Siamese chocolate socks!)
         drawFrontPaws(in: ctx, seatX: seatX, seatY: seatY, breath: breath, physics: physics, coat: coat)
-
-        // 8. Floating Mechanical Keycap Badges (keyboard + mouse clicks)
-        if !physics.floatingKeycaps.isEmpty {
-            drawFloatingKeycaps(in: ctx, physics: physics)
-        }
-
-        // 9. Subtle Petting Sparkles / Sleep Z
-        drawSparkles(in: ctx, physics: physics, eyeTheme: settings.eyeTheme)
-
-        // 10. Optional non-intrusive Permission Pill if global monitoring not yet granted
-        if showPermissionPill {
-            drawPermissionPill(in: ctx, text: permissionPillText)
-        }
-
-        ctx.restoreGState()
     }
 
     // MARK: - Mini White Mouse
@@ -239,7 +253,7 @@ enum CatRenderer {
         theme: KeyboardTheme,
         eyeTheme: EyeColorTheme,
         showLegends: Bool
-    ) {
+    ) -> CGPath {
         let tl = KeyboardLayout.screenQuadPoint(su: -0.012, sv: -0.04)
         let tr = KeyboardLayout.screenQuadPoint(su: 1.012, sv: -0.04)
         let bl = KeyboardLayout.screenQuadPoint(su: -0.016, sv: 1.04)
@@ -390,6 +404,7 @@ enum CatRenderer {
                 color: glowBaseColor.withAlphaComponent(0.36 * glow)
             )
         }
+        return topChassis
     }
 
     // MARK: - Tail

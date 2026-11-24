@@ -12,6 +12,8 @@ echo "==> Building ${APP_NAME}.app..."
 mkdir -p "$MACOS_DIR" "$RES_DIR"
 
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
+mkdir -p "$RES_DIR/Doraemon"
+cp "$ROOT/Resources/Doraemon/"*.png "$RES_DIR/Doraemon/"
 
 if [ -f "$ROOT/Resources/AppIcon.icns" ]; then
     cp "$ROOT/Resources/AppIcon.icns" "$RES_DIR/AppIcon.icns"
@@ -90,6 +92,7 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/InputEngine.swift"
     "$ROOT/Sources/CatPhysics.swift"
     "$ROOT/Sources/CatRenderer.swift"
+    "$ROOT/Sources/DoraemonRenderer.swift"
     "$ROOT/Sources/CoatPatterns.swift"
     "$ROOT/Sources/OverlayWindow.swift"
     "$ROOT/Sources/AppDelegate.swift"
@@ -127,7 +130,7 @@ lipo -info "$MACOS_DIR/$APP_NAME"
 #   4. Ad-hoc (last resort — permission will be lost on every update)
 SIGN_IDENTITY="${KUROCAT_SIGN_IDENTITY:-}"
 if [ -z "$SIGN_IDENTITY" ]; then
-    SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Developer ID Application:/{print $2; exit}')"
+    SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk '/Developer ID Application:/ {print $2; exit}')"
 fi
 if [ -z "$SIGN_IDENTITY" ]; then
     # Prefer the long-lived shared "KuroCat Code Signing" cert (matches CI so permissions survive updates)
@@ -136,11 +139,11 @@ if [ -z "$SIGN_IDENTITY" ]; then
     fi
 fi
 if [ -z "$SIGN_IDENTITY" ]; then
-    SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development:/{print $2; exit}')"
+    SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development:/ {print $2; exit}')"
 fi
 
 if [ -n "$SIGN_IDENTITY" ]; then
-    echo "==> Signing with stable certificate: $SIGN_IDENTITY"
+    echo "==> Signing with stable certificate"
     codesign --force --deep --sign "$SIGN_IDENTITY" --identifier "com.chanke.kurocat" "$APP_BUNDLE"
 else
     echo "==> WARNING: no stable signing certificate found — signing ad-hoc." >&2
