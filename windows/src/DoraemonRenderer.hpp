@@ -119,17 +119,15 @@ private:
         Gdiplus::Matrix head;
 
         explicit Pose(const CatPhysics& physics) {
-            const float size = 1.50f * (1.0f - physics.huntIntensity.value * 0.05f);
             body.Translate(CatPhysics::SeatAnchor.x + physics.bodyShiftX.value, CatPhysics::SeatAnchor.y + 24.0f);
             body.Rotate(physics.bodyTilt.value * 0.65f * RadToDeg);
-            body.Scale(size, size);
+            body.Scale(1.50f, 1.50f);
             body.Translate(-64.0f, -128.0f);
 
             const float yaw = physics.headYaw.value;
             const float breath = std::sin(physics.time * 2.1f) * 0.55f;
             head.Translate(64.0f + yaw * 1.4f, 78.0f + physics.headPitch.value * 0.85f + breath);
             head.Rotate(physics.headTilt.value * 0.45f * RadToDeg);
-            head.Scale(1.0f - std::abs(yaw) * 0.035f, 1.0f);
             head.Translate(-64.0f, -78.0f);
         }
     };

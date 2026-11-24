@@ -41,10 +41,9 @@ struct DoraemonRenderer {
 
         init(_ physics: CatPhysics) {
             let seat = CatPhysics.seatAnchor
-            let size = 1.50 * (1 - physics.huntIntensity.value * 0.05)
             body = CGAffineTransform(translationX: seat.x + physics.bodyShiftX.value, y: seat.y + 24)
                 .rotated(by: physics.bodyTilt.value * 0.65)
-                .scaledBy(x: size, y: size)
+                .scaledBy(x: 1.50, y: 1.50)
                 .translatedBy(x: -64, y: -128)
 
             let yaw = physics.headYaw.value
@@ -52,7 +51,6 @@ struct DoraemonRenderer {
             head = CGAffineTransform(translationX: 64 + yaw * 1.4,
                                      y: 78 + physics.headPitch.value * 0.85 + breath)
                 .rotated(by: physics.headTilt.value * 0.45)
-                .scaledBy(x: 1 - abs(yaw) * 0.035, y: 1)
                 .translatedBy(x: -64, y: -78)
         }
     }
