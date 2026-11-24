@@ -18,6 +18,7 @@ let red = CGColor(srgbRed: 0.88, green: 0.11, blue: 0.15, alpha: 1)
 let bell = CGColor(srgbRed: 1, green: 0.80, blue: 0.15, alpha: 1)
 let bellyBounds = CGRect(x: 46.1, y: 80.8, width: 35.8, height: 34.8)
 let bellBounds = CGRect(x: 58.5, y: 81.4, width: 11, height: 10.6)
+let soleBounds = CGRect(x: -12.2, y: -14.1, width: 24.4, height: 28.2)
 
 func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x, y: y) }
 
@@ -44,15 +45,16 @@ func drawHand(_ ctx: CGContext) {
     oval(ctx, CGRect(x: 91.2, y: 99.8, width: 15.6, height: 14.8), color: white)
 }
 
+func soleTransform(isLeft: Bool) -> CGAffineTransform {
+    CGAffineTransform(translationX: isLeft ? 43 : 85, y: 112.4)
+        .scaledBy(x: isLeft ? -1 : 1, y: 1)
+        .rotated(by: 0.13)
+}
+
 func drawSole(_ ctx: CGContext, isLeft: Bool) {
     ctx.saveGState()
-    if isLeft {
-        ctx.translateBy(x: 128, y: 0)
-        ctx.scaleBy(x: -1, y: 1)
-    }
-    ctx.translateBy(x: 85, y: 112.4)
-    ctx.rotate(by: 0.13)
-    oval(ctx, CGRect(x: -12.2, y: -14.1, width: 24.4, height: 28.2), color: white)
+    ctx.concatenate(soleTransform(isLeft: isLeft))
+    oval(ctx, soleBounds, color: white)
     ctx.restoreGState()
 }
 
@@ -106,7 +108,8 @@ func drawShoulderMask(_ ctx: CGContext) {
     ctx.setFillColor(gray: 1, alpha: 1)
     ctx.fill(shoulderMaskBounds)
 
-    ctx.clip(to: CGRect(x: 0, y: 0, width: frame.width, height: 98))
+    // Only mask the shoulder on this side. The renderer mirrors it for the other arm.
+    ctx.clip(to: CGRect(x: 0, y: 0, width: 64, height: 104))
     let torso = CGMutablePath()
     torsoOutline(torso)
     ctx.addPath(torso)
@@ -120,11 +123,8 @@ func drawShoulderMask(_ ctx: CGContext) {
     ctx.fillPath()
     ctx.fillEllipse(in: bellyBounds)
     ctx.fillEllipse(in: bellBounds)
-
-    let fade = CGGradient(colorsSpace: CGColorSpaceCreateDeviceGray(),
-                          colors: [CGColor(gray: 1, alpha: 0), CGColor(gray: 1, alpha: 1)] as CFArray,
-                          locations: [0, 1])!
-    ctx.drawLinearGradient(fade, start: p(0, 94), end: p(0, 98), options: [])
+    ctx.concatenate(soleTransform(isLeft: true))
+    ctx.fillEllipse(in: soleBounds)
 }
 
 func drawHead(_ ctx: CGContext) {

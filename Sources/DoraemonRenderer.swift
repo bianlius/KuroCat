@@ -24,6 +24,9 @@ struct DoraemonRenderer {
     }()
 
     private static let ink = CGColor(srgbRed: 0.044, green: 0.067, blue: 0.085, alpha: 1)
+    private static let restingOutlineFade = CGGradient(colorsSpace: nil,
+                                                      colors: [ink.copy(alpha: 0)!, ink] as CFArray,
+                                                      locations: nil)
     private static let coatBlue = CGColor(srgbRed: 0, green: 159.0/255, blue: 222.0/255, alpha: 1)
     private static let handCenter = CGPoint(x: 99, y: 107.2)
     private static let figureArtwork = CGAffineTransform(translationX: 64, y: 128)
@@ -82,14 +85,12 @@ struct DoraemonRenderer {
         drawSprite(rightFoot, in: ctx)
         ctx.restoreGState()
 
-        let leftShoulder = CGPoint(x: 43, y: 87.5).applying(Self.figureArtwork)
-        let rightShoulder = CGPoint(x: 85, y: 87.5).applying(Self.figureArtwork)
         let leftHand = wristPose(paw: physics.leftPaw.point, rest: CatPhysics.leftPawRest,
                                  idleHand: CGPoint(x: 27.5, y: 98.1), toSprite: toSprite)
         let rightHand = wristPose(paw: physics.rightPaw.point, rest: CatPhysics.rightPawRest,
                                   idleHand: CGPoint(x: 100.5, y: 98.1), toSprite: toSprite)
-        drawSleeve(in: ctx, shoulder: leftShoulder, wrist: leftHand.point, reach: leftHand.reach)
-        drawSleeve(in: ctx, shoulder: rightShoulder, wrist: rightHand.point, reach: rightHand.reach)
+        drawSleeve(in: ctx, wrist: leftHand.point, reach: leftHand.reach, isLeft: true)
+        drawSleeve(in: ctx, wrist: rightHand.point, reach: rightHand.reach, isLeft: false)
         drawHand(in: ctx, at: leftHand.point)
         drawHand(in: ctx, at: rightHand.point)
 
@@ -115,46 +116,60 @@ struct DoraemonRenderer {
         drawSprite(hand, in: ctx, offset: CGPoint(x: point.x - Self.handCenter.x, y: point.y - Self.handCenter.y))
     }
 
-    private func drawSleeve(in ctx: CGContext, shoulder: CGPoint, wrist: CGPoint, reach: CGFloat) {
+    private func drawSleeve(in ctx: CGContext, wrist: CGPoint, reach: CGFloat, isLeft: Bool) {
+        let side: CGFloat = isLeft ? -1 : 1
+        let relaxed = 1 - reach
+        let shoulder = CGPoint(x: 64 + side * (20 + 0.5 * relaxed), y: 86).applying(Self.figureArtwork)
         let dx = wrist.x - shoulder.x
         let dy = wrist.y - shoulder.y
-        let length = max(1, hypot(dx, dy))
-        let normal = CGPoint(x: -dy / length, y: dx / length)
-        let shoulderHalfWidth: CGFloat = 5.8
-        let wristHalfWidth: CGFloat = 5.45
-        let mid = CGPoint(x: (shoulder.x + wrist.x) / 2, y: (shoulder.y + wrist.y) / 2)
-        let middleHalfWidth = (shoulderHalfWidth + wristHalfWidth) / 2 + 1.6 * (1 - reach)
+        // In the resting pose the upper arm angles out toward the hand from the collar.
+        let shoulderOutward = side * (0.38 + 0.30 * relaxed)
+        let shoulderDown = 0.925 - 0.192 * relaxed
+        let shoulderCurveLength = min(hypot(dx, dy) * 0.35, 10)
+        let shoulderControl = CGPoint(x: shoulder.x + shoulderOutward * shoulderCurveLength,
+                                      y: shoulder.y + shoulderDown * shoulderCurveLength)
+        let wristControl = CGPoint(x: wrist.x - dx * 0.33, y: wrist.y - dy * 0.33)
 
         let sleeve = CGMutablePath()
-        let start = CGPoint(x: shoulder.x + normal.x * shoulderHalfWidth,
-                            y: shoulder.y + normal.y * shoulderHalfWidth)
-        sleeve.move(to: start)
-        sleeve.addQuadCurve(to: CGPoint(x: wrist.x + normal.x * wristHalfWidth,
-                                        y: wrist.y + normal.y * wristHalfWidth),
-                            control: CGPoint(x: mid.x + normal.x * middleHalfWidth,
-                                             y: mid.y + normal.y * middleHalfWidth))
-        sleeve.addLine(to: CGPoint(x: wrist.x - normal.x * wristHalfWidth, y: wrist.y - normal.y * wristHalfWidth))
-        sleeve.addQuadCurve(to: CGPoint(x: shoulder.x - normal.x * shoulderHalfWidth,
-                                        y: shoulder.y - normal.y * shoulderHalfWidth),
-                            control: CGPoint(x: mid.x - normal.x * middleHalfWidth,
-                                             y: mid.y - normal.y * middleHalfWidth))
-        sleeve.addQuadCurve(to: start, control: CGPoint(x: shoulder.x - dx / length * 5,
-                                                       y: shoulder.y - dy / length * 5))
-        sleeve.closeSubpath()
+        sleeve.move(to: shoulder)
+        sleeve.addCurve(to: wrist, control1: shoulderControl, control2: wristControl)
+        let sleeveWidth: CGFloat = 10.9
+        let outlineWidth: CGFloat = 1.45
 
-        ctx.addPath(sleeve)
-        ctx.setFillColor(Self.coatBlue)
-        ctx.fillPath()
-
-        // Join the blue fills, preserving the sleeve outline where it crosses the belly.
         ctx.saveGState()
-        ctx.concatenate(Self.shoulderMaskTransform)
-        ctx.clip(to: Self.shoulderMaskBounds, mask: shoulderMask)
-        ctx.concatenate(Self.shoulderMaskTransform.inverted())
-        ctx.addPath(sleeve)
+        ctx.setLineCap(.butt)
         ctx.setStrokeColor(Self.ink)
-        ctx.setLineWidth(1.45)
-        ctx.setLineJoin(.round)
+        ctx.setLineWidth(sleeveWidth + outlineWidth)
+
+        // Keep the short inner edge visible just above the hand in the resting pose.
+        if relaxed > 0, let fade = Self.restingOutlineFade {
+            ctx.saveGState()
+            let innerEdge = CGRect(x: wrist.x - side * 8 - 7, y: wrist.y - 11, width: 14, height: 16)
+            ctx.addEllipse(in: innerEdge)
+            ctx.clip()
+            ctx.setAlpha(relaxed)
+            ctx.addPath(sleeve)
+            ctx.replacePathWithStrokedPath()
+            ctx.clip()
+            ctx.drawLinearGradient(fade, start: CGPoint(x: wrist.x, y: wrist.y - 9),
+                                   end: CGPoint(x: wrist.x, y: wrist.y - 4), options: .drawsAfterEndLocation)
+            ctx.restoreGState()
+        }
+
+        // Preserve the arm outline where it overlaps the belly or feet.
+        ctx.saveGState()
+        let maskTransform = isLeft ? Self.shoulderMaskTransform
+            : Self.shoulderMaskTransform.translatedBy(x: 128, y: 0).scaledBy(x: -1, y: 1)
+        ctx.concatenate(maskTransform)
+        ctx.clip(to: Self.shoulderMaskBounds, mask: shoulderMask)
+        ctx.concatenate(maskTransform.inverted())
+        ctx.addPath(sleeve)
+        ctx.strokePath()
+        ctx.restoreGState()
+
+        ctx.addPath(sleeve)
+        ctx.setStrokeColor(Self.coatBlue)
+        ctx.setLineWidth(sleeveWidth - outlineWidth)
         ctx.strokePath()
         ctx.restoreGState()
     }

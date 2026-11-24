@@ -16,7 +16,7 @@ public:
             !skin->hand.load(IDR_DORAEMON_HAND) ||
             !skin->rightFoot.load(IDR_DORAEMON_RIGHT_FOOT) ||
             !mask.load(IDR_DORAEMON_SHOULDER_MASK) ||
-            !skin->buildShoulderMask(*mask.image)) {
+            !skin->buildShoulderMasks(*mask.image)) {
             return nullptr;
         }
         return skin;
@@ -62,10 +62,8 @@ public:
         pose.body.Invert();
         const Wrist left = wristPose(physics.leftPaw.point(), CatPhysics::LeftPawRest, {27.5f, 98.1f}, pose.body);
         const Wrist right = wristPose(physics.rightPaw.point(), CatPhysics::RightPawRest, {100.5f, 98.1f}, pose.body);
-        PointF shoulders[] = {{43.0f, 87.5f}, {85.0f, 87.5f}};
-        pose.figure.TransformPoints(shoulders, 2);
-        drawSleeve(g, shoulders[0], left);
-        drawSleeve(g, shoulders[1], right);
+        drawSleeve(g, pose.figure, left, true);
+        drawSleeve(g, pose.figure, right, false);
         hand.draw(g, left.point.X - 99.0f, left.point.Y - 107.2f);
         hand.draw(g, right.point.X - 99.0f, right.point.Y - 107.2f);
 
@@ -80,7 +78,7 @@ private:
     static constexpr float SpriteSize = 128.0f;
     static constexpr float RadToDeg = 57.2957795f;
     static constexpr float ArtworkScale = 1.12f;
-    static Gdiplus::Color ink() { return Gdiplus::Color(255, 11, 17, 22); }
+    static Gdiplus::Color ink(BYTE alpha = 255) { return Gdiplus::Color(alpha, 11, 17, 22); }
 
     struct Sprite {
         struct ReleaseStream {
@@ -145,12 +143,13 @@ private:
     Sprite body;
     Sprite hand;
     Sprite rightFoot;
-    Gdiplus::GraphicsPath shoulderMask;
+    Gdiplus::GraphicsPath leftShoulderMask;
+    Gdiplus::GraphicsPath rightShoulderMask;
 
-    bool buildShoulderMask(Gdiplus::Bitmap& mask) {
+    bool buildShoulderMasks(Gdiplus::Bitmap& mask) {
         using namespace Gdiplus;
         // GDI+ clips to paths. Convert the dark part of the shared grayscale mask
-        // into a path once, so the outlines can join the body without a dark seam.
+        // to a path, then mirror it to preserve the stroke on a cross-body reach.
         const Rect pixels(0, 0, static_cast<INT>(mask.GetWidth()), static_cast<INT>(mask.GetHeight()));
         if (pixels.Width == 0 || pixels.Height == 0) return false;
         BitmapData data{};
@@ -166,7 +165,7 @@ private:
                 if (covered && start < 0) {
                     start = x;
                 } else if (!covered && start >= 0) {
-                    shoulderMask.AddRectangle(RectF(
+                    leftShoulderMask.AddRectangle(RectF(
                         64.0f + (start + maskOrigin - 64.0f) * ArtworkScale,
                         128.0f + (y + maskOrigin - 128.0f) * ArtworkScale,
                         (x - start) * ArtworkScale, ArtworkScale));
@@ -175,7 +174,10 @@ private:
             }
         }
         mask.UnlockBits(&data);
-        return shoulderMask.GetPointCount() > 0;
+        Matrix mirror(-1.0f, 0, 0, 1.0f, SpriteSize, 0);
+        return leftShoulderMask.GetPointCount() > 0 &&
+               rightShoulderMask.AddPath(&leftShoulderMask, FALSE) == Ok &&
+               rightShoulderMask.Transform(&mirror) == Ok;
     }
 
     static Wrist wristPose(Pt paw, Pt rest, Gdiplus::PointF idle, const Gdiplus::Matrix& toBody) {
@@ -197,33 +199,51 @@ private:
         path.AddBezier(start, first, second, end);
     }
 
-    void drawSleeve(Gdiplus::Graphics& g, Gdiplus::PointF shoulder, const Wrist& wrist) const {
+    void drawSleeve(Gdiplus::Graphics& g, const Gdiplus::Matrix& figure, const Wrist& wrist, bool isLeft) const {
         using namespace Gdiplus;
+        const float side = isLeft ? -1.0f : 1.0f;
+        const float relaxed = 1.0f - wrist.reach;
+        PointF shoulder(64.0f + side * (20.0f + 0.5f * relaxed), 86.0f);
+        figure.TransformPoints(&shoulder, 1);
         const PointF delta = wrist.point - shoulder;
-        const float length = std::max(1.0f, std::hypot(delta.X, delta.Y));
-        const PointF normal(-delta.Y / length, delta.X / length);
-        const PointF middle = scaled(shoulder + wrist.point, 0.5f);
-        const float middleHalfWidth = (5.8f + 5.45f) / 2.0f + 1.6f * (1.0f - wrist.reach);
-        const PointF shoulderEdge = scaled(normal, 5.8f);
-        const PointF wristEdge = scaled(normal, 5.45f);
-        const PointF middleEdge = scaled(normal, middleHalfWidth);
+        // In the resting pose the upper arm angles out toward the hand from the collar.
+        const float shoulderOutward = side * (0.38f + 0.30f * relaxed);
+        const float shoulderDown = 0.925f - 0.192f * relaxed;
+        const float shoulderCurveLength = std::min(std::hypot(delta.X, delta.Y) * 0.35f, 10.0f);
+        const PointF shoulderControl = shoulder + scaled({shoulderOutward, shoulderDown}, shoulderCurveLength);
+        const PointF wristControl = wrist.point - scaled(delta, 0.33f);
 
         GraphicsPath sleeve;
-        addCurve(sleeve, shoulder + shoulderEdge, middle + middleEdge, wrist.point + wristEdge);
-        sleeve.AddLine(wrist.point + wristEdge, wrist.point - wristEdge);
-        addCurve(sleeve, wrist.point - wristEdge, middle - middleEdge, shoulder - shoulderEdge);
-        addCurve(sleeve, shoulder - shoulderEdge, shoulder - scaled(delta, 5.0f / length), shoulder + shoulderEdge);
-        sleeve.CloseFigure();
+        sleeve.AddBezier(shoulder, shoulderControl, wristControl, wrist.point);
+        constexpr float sleeveWidth = 10.9f;
+        constexpr float outlineWidth = 1.45f;
 
-        SolidBrush blue(Color(255, 0, 159, 222));
-        g.FillPath(&blue, &sleeve);
+        // Keep the short inner edge visible just above the hand in the resting pose.
+        if (relaxed > 0.0f) {
+            const RectF bounds(wrist.point.X - side * 8.0f - 7.0f, wrist.point.Y - 11.0f, 14.0f, 16.0f);
+            const Color restInk = ink(static_cast<BYTE>(relaxed * 255.0f));
+            const Color transparentInk = ink(0);
+            const Color colors[] = {transparentInk, transparentInk, restInk, restInk};
+            const REAL stops[] = {0.0f, 2.0f / 16.0f, 7.0f / 16.0f, 1.0f};
+            LinearGradientBrush fade(bounds, transparentInk, restInk, LinearGradientModeVertical);
+            fade.SetInterpolationColors(colors, stops, 4);
+            Pen innerEdge(&fade, sleeveWidth + outlineWidth);
+            GraphicsPath nearHand;
+            nearHand.AddEllipse(bounds);
+            GraphicsState innerOutline = g.Save();
+            g.SetClip(&nearHand, CombineModeIntersect);
+            g.DrawPath(&innerEdge, &sleeve);
+            g.Restore(innerOutline);
+        }
 
         GraphicsState outline = g.Save();
-        g.SetClip(&shoulderMask, CombineModeExclude);
-        Pen edge(ink(), 1.45f);
-        edge.SetLineJoin(LineJoinRound);
+        g.SetClip(isLeft ? &leftShoulderMask : &rightShoulderMask, CombineModeExclude);
+        Pen edge(ink(), sleeveWidth + outlineWidth);
         g.DrawPath(&edge, &sleeve);
         g.Restore(outline);
+
+        Pen blue(Color(255, 0, 159, 222), sleeveWidth - outlineWidth);
+        g.DrawPath(&blue, &sleeve);
     }
 
     static void drawEyes(Gdiplus::Graphics& g, const CatPhysics& physics, Gdiplus::Color tint) {
