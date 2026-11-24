@@ -24,6 +24,7 @@ using std::max;
 #include <string>
 #include <cmath>
 #include <cwchar>
+#include <memory>
 #include "KeyMap.hpp"
 #include "InputEngine.hpp"
 #include "CatPhysics.hpp"
@@ -90,7 +91,8 @@ enum MenuCmd : UINT {
     CMD_RESET_POS,
     CMD_RELAUNCH_ADMIN,
     CMD_TOGGLE_RUN_AS_ADMIN,
-    CMD_QUIT
+    CMD_QUIT,
+    CMD_COAT_DORAEMON
 };
 
 struct AppState {
@@ -102,6 +104,7 @@ struct AppState {
     CatSettings settings;
     InputEngine input;
     CatPhysics physics;
+    std::unique_ptr<DoraemonRenderer> doraemon;
 
     bool isVisible = true;
     bool isDragging = false;
@@ -590,6 +593,10 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::Siamese ? MF_CHECKED : 0), CMD_COAT_SIAMESE, tr(L"\u6316\u7164\u66B9\u7F57\u732B", L"Siamese Cat"));
     AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::Shorthair ? MF_CHECKED : 0), CMD_COAT_SHORTHAIR, tr(L"\u7F8E\u77ED\uFF08\u94F6\u864E\u6591\u52A0\u767D\uFF09", L"Silver Tabby Shorthair"));
     AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::OrangeWhite ? MF_CHECKED : 0), CMD_COAT_ORANGE_WHITE, tr(L"\u6A58\u767D\u732B", L"Orange & White Cat"));
+    if (app.doraemon) {
+        AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::Doraemon ? MF_CHECKED : 0),
+                    CMD_COAT_DORAEMON, tr(L"\u54C6\u5566A\u68A6", L"Doraemon"));
+    }
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)coatMenu, tr(L"\u732B\u54AA\u76AE\u80A4", L"Cat Skin"));
 
     // Keyboard Theme submenu
@@ -713,6 +720,12 @@ void showContextMenu(AppState& app, POINT screenPt) {
         case CMD_COAT_ORANGE_WHITE:
             app.settings.coatTheme = cmd == CMD_COAT_SHORTHAIR ? CatCoatTheme::Shorthair : CatCoatTheme::OrangeWhite;
             app.settings.eyeTheme = cmd == CMD_COAT_SHORTHAIR ? EyeColorTheme::ReferenceHazel : EyeColorTheme::WarmAmber;
+            app.settings.saveToRegistry();
+            break;
+        case CMD_COAT_DORAEMON:
+            if (!app.doraemon) break;
+            app.settings.coatTheme = CatCoatTheme::Doraemon;
+            app.settings.eyeTheme = EyeColorTheme::IceCyan;
             app.settings.saveToRegistry();
             break;
         case CMD_EYE_SOFT_AMBER: app.settings.eyeTheme = EyeColorTheme::SoftAmber; app.settings.saveToRegistry(); break;
@@ -865,7 +878,7 @@ void tickAndRender(AppState& app) {
     Gdiplus::Graphics g(&bmp);
     g.Clear(app.settings.obsCaptureMode == 2 ? Gdiplus::Color(255, 0, 255, 0) : Gdiplus::Color(0, 0, 0, 0));
     g.ScaleTransform((float)w / CatPhysics::CanvasWidth, (float)h / CatPhysics::CanvasHeight);
-    CatRenderer::draw(g, app.physics, app.settings);
+    CatRenderer::draw(g, app.physics, app.settings, app.doraemon.get());
 
     POINT ptDst = { wr.left, wr.top };
     SIZE szWnd = { w, h };
@@ -1315,6 +1328,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         return 1;
     }
 
+    app.doraemon = DoraemonRenderer::load();
+    if (!app.doraemon && app.settings.coatTheme == CatCoatTheme::Doraemon) {
+        app.settings.coatTheme = CatCoatTheme::ClassicBlack;
+    }
     applyWindowScaleAndPosition(app, false);
     app.input.registerRawInput(app.hwnd);
     registerTrayIcon(app);
@@ -1366,6 +1383,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     }
 
     g_app = nullptr;
+    app.doraemon.reset();
     Gdiplus::GdiplusShutdown(gdipToken);
     if (hMutex) CloseHandle(hMutex);
     return exitCode;

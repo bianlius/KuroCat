@@ -7,33 +7,18 @@
 #include <vector>
 #include <algorithm>
 #include "CatPhysics.hpp"
+#include "DoraemonRenderer.hpp"
 #include "../../shared/CoatPatterns.hpp"
-
-enum class CatHitZone {
-    None,
-    Head,
-    Body
-};
 
 class CatRenderer {
 public:
     static constexpr float RadToDeg = 57.2957795f;
 
-    static CatHitZone hitTest(Pt p, const CatPhysics& physics, CatCoatTheme coat = CatCoatTheme::ClassicBlack) {
-        float cx = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value;
-        float breath = std::sin(physics.time * 2.1f) * 1.6f;
-        float siameseLift = (coat == CatCoatTheme::Siamese) ? -3.0f : 0.0f;
-        Pt headCenter = { cx + physics.bodyTilt.value * 36.0f + physics.headYaw.value * 7.5f,
-                          126.0f + siameseLift + physics.headOffsetY.value + physics.headPitch.value * 4.8f + breath * 1.1f };
-
-        float hdx = (p.x - headCenter.x) / 44.0f;
-        float hdy = (p.y - headCenter.y) / 38.0f;
-        if (hdx * hdx + hdy * hdy <= 1.0f) return CatHitZone::Head;
-
-        float bdx = (p.x - cx) / 58.0f;
-        float bdy = (p.y - 196.0f) / 56.0f;
-        if (bdx * bdx + bdy * bdy <= 1.0f) return CatHitZone::Body;
-
+    static CatHitZone hitTest(Pt p, const CatPhysics& physics, CatCoatTheme coat) {
+        const CatHitZone zone = coat == CatCoatTheme::Doraemon
+            ? DoraemonRenderer::hitTest(p, physics)
+            : hitTestCat(p, physics, coat);
+        if (zone != CatHitZone::None) return zone;
         if (p.x >= 58.0f && p.x <= 294.0f && p.y >= 232.0f && p.y <= 296.0f) return CatHitZone::Body;
         return CatHitZone::None;
     }
@@ -51,7 +36,8 @@ public:
         return -1;
     }
 
-    static void draw(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings) {
+    static void draw(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings,
+                     const DoraemonRenderer* doraemon) {
         using namespace Gdiplus;
         g.SetSmoothingMode(SmoothingModeAntiAlias);
         g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
@@ -63,6 +49,48 @@ public:
             g.ScaleTransform(-1.0f, 1.0f);
         }
 
+        drawMouse(g, physics, settings.keyboardTheme);
+        GraphicsPath keyboardDeck;
+        drawKeyboard(g, physics, settings.keyboardTheme, settings.eyeTheme,
+                     settings.showKeyLegends, settings.keyboardMarquee, keyboardDeck);
+
+        if (settings.coatTheme == CatCoatTheme::Doraemon && doraemon) {
+            doraemon->draw(g, physics, eyePrimary(settings.eyeTheme), keyboardDeck);
+        } else {
+            drawCat(g, physics, settings);
+        }
+
+        if (!physics.floatingKeycaps.empty()) {
+            drawFloatingKeycaps(g, physics);
+        }
+        drawSparkles(g, physics, settings.eyeTheme);
+
+        g.Restore(flipState);
+        if (settings.isEditMode) {
+            drawEditOverlay(g, settings.isEnglish, settings.scale);
+        }
+    }
+
+private:
+    static CatHitZone hitTestCat(Pt p, const CatPhysics& physics, CatCoatTheme coat) {
+        float cx = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value;
+        float breath = std::sin(physics.time * 2.1f) * 1.6f;
+        float siameseLift = (coat == CatCoatTheme::Siamese) ? -3.0f : 0.0f;
+        Pt headCenter = { cx + physics.bodyTilt.value * 36.0f + physics.headYaw.value * 7.5f,
+                          126.0f + siameseLift + physics.headOffsetY.value + physics.headPitch.value * 4.8f + breath * 1.1f };
+
+        float hdx = (p.x - headCenter.x) / 44.0f;
+        float hdy = (p.y - headCenter.y) / 38.0f;
+        if (hdx * hdx + hdy * hdy <= 1.0f) return CatHitZone::Head;
+
+        float bdx = (p.x - cx) / 58.0f;
+        float bdy = (p.y - 196.0f) / 56.0f;
+        if (bdx * bdx + bdy * bdy <= 1.0f) return CatHitZone::Body;
+
+        return CatHitZone::None;
+    }
+
+    static void drawCat(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings) {
         float breath = std::sin(physics.time * 2.1f) * 1.6f;
         float seatX = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value;
         float seatY = CatPhysics::SeatAnchor.y;
@@ -73,46 +101,18 @@ public:
             126.0f + siameseLift + physics.headOffsetY.value + physics.headPitch.value * 4.8f + breath * 1.1f
         };
 
-        // 1. Mini White Mouse (facing cat)
-        drawMouse(g, physics, settings.keyboardTheme);
-
-        // 2. Mini 65% Mechanical Keyboard (facing cat) + Backlit Glow
-        drawKeyboard(g, physics, settings.keyboardTheme, settings.eyeTheme, settings.showKeyLegends, settings.keyboardMarquee);
-
         if (physics.tailTyping.value < 0.5f) drawTail(g, seatX, seatY, physics, settings.coatTheme);
 
-        // 4. 3D-Projected Ears (behind crown silhouette)
         drawEarsLayer(g, headCenter, physics, settings.coatTheme);
-
-        // 5. Unified C1-Continuous Silhouette (+ 2.5D Siamese Mask)
         drawUnifiedSilhouette(g, seatX, seatY, headCenter, breath, physics, settings.coatTheme);
 
-        // 6. Hind Foot (3rd simultaneous key easter egg!)
         if (physics.hindFootActive.value > 0.03f) {
             drawHindFoot(g, seatX, seatY, physics, settings.coatTheme);
         }
-
-        // 7. 2.5D Eyes & Whiskers
         drawHeadFeatures(g, headCenter, physics, settings.eyeTheme, settings.coatTheme);
-
-        // 8. Front Paws (Idle Sitting & Dynamic Reaching)
         drawFrontPaws(g, seatX, seatY, breath, physics, settings.coatTheme);
 
         if (physics.tailTyping.value >= 0.5f) drawTail(g, seatX, seatY, physics, settings.coatTheme);
-
-        // 9. Floating Keycap Badges (keyboard + mouse clicks)
-        if (!physics.floatingKeycaps.empty()) {
-            drawFloatingKeycaps(g, physics);
-        }
-
-        // 10. Subtle Petting Sparkles & Sleep Z
-        drawSparkles(g, physics, settings.eyeTheme);
-
-        g.Restore(flipState);
-
-        if (settings.isEditMode) {
-            drawEditOverlay(g, settings.isEnglish, settings.scale);
-        }
     }
 
     static void drawEditOverlay(Gdiplus::Graphics& g, bool isEnglish, float scale) {
@@ -164,7 +164,6 @@ public:
         g.DrawString(buf, -1, &spFont, RectF(158.0f, 290.0f, 44.0f, 16.0f), &sf, &whiteBrush);
     }
 
-private:
     static Gdiplus::Color catBlack(BYTE a = 255)      { return Gdiplus::Color(a, 22, 22, 24); }
     static Gdiplus::Color contourMint(BYTE a = 194)   { return Gdiplus::Color(a, 209, 235, 227); }
     static Gdiplus::Color whiskerWhite(BYTE a = 174)  { return Gdiplus::Color(a, 224, 230, 235); }
@@ -395,7 +394,8 @@ private:
         }
     }
 
-    static void drawKeyboard(Gdiplus::Graphics& g, const CatPhysics& physics, KeyboardTheme theme, EyeColorTheme eyeTheme, bool showLegends, bool marquee) {
+    static void drawKeyboard(Gdiplus::Graphics& g, const CatPhysics& physics, KeyboardTheme theme,
+                             EyeColorTheme eyeTheme, bool showLegends, bool marquee, Gdiplus::GraphicsPath& deckPath) {
         using namespace Gdiplus;
         Pt tl = KeyboardLayout::screenQuadPoint(-0.012f, -0.04f);
         Pt tr = KeyboardLayout::screenQuadPoint(1.012f, -0.04f);
@@ -432,7 +432,6 @@ private:
             g.FillPath(&bb, &lp);
             g.DrawPath(&bp, &lp);
         }
-        GraphicsPath deckPath;
         addQuadPoly(deckPath, tl, tr, br, bl);
         {
             SolidBrush db(deckCol);

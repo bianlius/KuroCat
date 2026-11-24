@@ -13,7 +13,14 @@ enum class CatCoatTheme : int {
     ClassicBlack = 0,
     Siamese = 1,
     Shorthair = 2,
-    OrangeWhite = 3
+    OrangeWhite = 3,
+    Doraemon = 4
+};
+
+enum class CatHitZone {
+    None,
+    Head,
+    Body
 };
 
 enum class KeyboardTheme : int {
@@ -53,6 +60,8 @@ struct CatSettings {
     int posX = -99999;
     int posY = -99999;
 
+    bool supportsFootEasterEgg() const { return coatTheme != CatCoatTheme::Doraemon; }
+
     void loadFromRegistry() {
         HKEY hKey = nullptr;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\KuroCat", 0, KEY_READ, &hKey) != ERROR_SUCCESS) return;
@@ -75,7 +84,7 @@ struct CatSettings {
         alwaysOnTop      = readDword(L"AlwaysOnTop", 1) != 0;
         runAsAdmin       = readDword(L"RunAsAdmin", 0) != 0;
         scale            = std::clamp((float)readDword(L"ScalePct", 100) / 100.0f, 0.5f, 2.0f);
-        coatTheme        = (CatCoatTheme)std::clamp((int)readDword(L"CoatTheme", 0), 0, 3);
+        coatTheme        = (CatCoatTheme)std::clamp((int)readDword(L"CoatTheme", 0), 0, (int)CatCoatTheme::Doraemon);
         keyboardTheme    = (KeyboardTheme)std::clamp((int)readDword(L"KeyboardTheme", 0), 0, 2);
         eyeTheme         = (EyeColorTheme)std::clamp((int)readDword(L"EyeTheme", 0), 0, 5);
         DWORD hasPos     = readDword(L"HasPos", 0);
@@ -485,7 +494,7 @@ public:
             rightKey = sorted.back();
         }
 
-        if (settings.footEasterEgg) {
+        if (settings.footEasterEgg && settings.supportsFootEasterEgg()) {
             if (orderedKeys.size() >= 3) {
                 for (PhysicalKey k : orderedKeys) {
                     if (k != leftKey && k != rightKey) { footKey = k; break; }
