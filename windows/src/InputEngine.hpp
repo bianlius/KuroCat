@@ -38,10 +38,43 @@ public:
 
     int totalKeystrokesToday = 0;
     bool isRawInputRegistered = false;
+    HHOOK kbHook_ = nullptr;
 
     std::function<void(PhysicalKey)> onKeyDown;
     std::function<void(PhysicalKey)> onKeyUp;
     std::function<void(int, bool)> onMouseClick;
+
+    static inline InputEngine* s_hookInstance = nullptr;
+
+    static LRESULT CALLBACK lowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+        if (nCode == HC_ACTION && s_hookInstance && lParam) {
+            const KBDLLHOOKSTRUCT* kb = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+            bool isDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+            bool isUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP);
+            if (isDown || isUp) {
+                USHORT flags = (kb->flags & LLKHF_EXTENDED) ? RI_KEY_E0 : 0;
+                PhysicalKey key = mapRawInputKey((USHORT)kb->scanCode, flags, (USHORT)kb->vkCode);
+                if (key != PhysicalKey::None) {
+                    s_hookInstance->setRawKeyState(key, isDown);
+                }
+            }
+        }
+        return CallNextHookEx(nullptr, nCode, wParam, lParam);
+    }
+
+    void installKeyboardHook() {
+        if (kbHook_) return;
+        s_hookInstance = this;
+        kbHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, lowLevelKeyboardProc, GetModuleHandleW(nullptr), 0);
+    }
+
+    void uninstallKeyboardHook() {
+        if (kbHook_) {
+            UnhookWindowsHookEx(kbHook_);
+            kbHook_ = nullptr;
+        }
+        if (s_hookInstance == this) s_hookInstance = nullptr;
+    }
 
     bool registerRawInput(HWND hwnd) {
         RAWINPUTDEVICE rid[2] = {};

@@ -11,6 +11,7 @@
 #include <vector>
 #include <algorithm>
 #include <unistd.h>
+#include <X11/Xatom.h>
 #include "KeyMap.hpp"
 #include "InputEngine.hpp"
 #include "CatPhysics.hpp"
@@ -52,12 +53,17 @@ struct LinuxApp {
     CatPhysics physics;
 
     bool isVisible = true;
+    bool hiddenByFullscreen = false;
+    double lastFullscreenCheck = 0.0;
     bool isDragging = false;
     int activeResizeCorner = -1;
     double resizeAnchorX = 0.0, resizeAnchorY = 0.0;
     bool clickThroughTemporarilyUnlocked = false;
     double dragStartRootX = 0.0, dragStartRootY = 0.0;
+    double lastDragRootX = 0.0;
     int dragStartWinX = 0, dragStartWinY = 0;
+    bool hasSavedObsPos = false;
+    int savedObsPosX = 0, savedObsPosY = 0;
 
     bool hasLastHover = false;
     Pt lastHoverCanvas = { 0.0f, 0.0f };
@@ -309,7 +315,8 @@ static void updateInputShape(LinuxApp& app) {
         gtk_widget_input_shape_combine_region(app.window, nullptr);
         return;
     }
-    if (app.settings.fullClickThrough && !app.clickThroughTemporarilyUnlocked) {
+    if ((app.settings.fullClickThrough && !app.clickThroughTemporarilyUnlocked)
+        || (app.settings.obsCaptureMode > 0 && app.settings.obsHideDesktop)) {
         cairo_region_t* empty = cairo_region_create();
         gtk_widget_input_shape_combine_region(app.window, empty);
         cairo_region_destroy(empty);
@@ -330,6 +337,72 @@ static void updateInputShape(LinuxApp& app) {
     cairo_region_union_rectangle(reg, &kbBox);
     gtk_widget_input_shape_combine_region(app.window, reg);
     cairo_region_destroy(reg);
+}
+
+static void applyOBSMode(LinuxApp& app) {
+    if (!app.window) return;
+    bool obsOn = (app.settings.obsCaptureMode > 0);
+    bool hideDesk = (obsOn && app.settings.obsHideDesktop);
+    gtk_window_set_skip_taskbar_hint(GTK_WINDOW(app.window), !obsOn);
+    gtk_window_set_skip_pager_hint(GTK_WINDOW(app.window), !obsOn);
+    if (hideDesk) {
+        if (!app.hasSavedObsPos) {
+            gtk_window_get_position(GTK_WINDOW(app.window), &app.savedObsPosX, &app.savedObsPosY);
+            app.hasSavedObsPos = true;
+        }
+        gtk_window_set_keep_above(GTK_WINDOW(app.window), FALSE);
+        gtk_window_set_keep_below(GTK_WINDOW(app.window), TRUE);
+        if (GdkWindow* gw = gtk_widget_get_window(app.window)) gdk_window_lower(gw);
+        gtk_window_move(GTK_WINDOW(app.window), -10000, -10000);
+        if (app.isVisible) gtk_widget_show(app.window);
+    } else {
+        gtk_window_set_keep_below(GTK_WINDOW(app.window), FALSE);
+        gtk_window_set_keep_above(GTK_WINDOW(app.window), app.settings.alwaysOnTop ? TRUE : FALSE);
+        if (app.hasSavedObsPos) {
+            gtk_window_move(GTK_WINDOW(app.window), app.savedObsPosX, app.savedObsPosY);
+            app.hasSavedObsPos = false;
+        }
+    }
+    updateInputShape(app);
+    gtk_widget_queue_draw(app.drawArea);
+}
+
+static bool isOtherWindowFullscreen(LinuxApp& app) {
+    static Display* dpy = XOpenDisplay(nullptr);
+    if (!dpy) return false;
+    static Atom netActive = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
+    static Atom netWmState = XInternAtom(dpy, "_NET_WM_STATE", False);
+    static Atom netWmFs = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
+    if (!netActive || !netWmState || !netWmFs) return false;
+
+    Atom actualType = 0;
+    int actualFmt = 0;
+    unsigned long nitems = 0, bytesAfter = 0;
+    unsigned char* prop = nullptr;
+    if (XGetWindowProperty(dpy, DefaultRootWindow(dpy), netActive, 0, 1, False, XA_WINDOW,
+                           &actualType, &actualFmt, &nitems, &bytesAfter, &prop) != Success || !prop) {
+        return false;
+    }
+    Window activeWin = (nitems >= 1) ? *(Window*)prop : 0;
+    XFree(prop);
+    if (!activeWin) return false;
+
+    Atom stType = 0;
+    int stFmt = 0;
+    unsigned long stItems = 0, stAfter = 0;
+    unsigned char* stProp = nullptr;
+    if (XGetWindowProperty(dpy, activeWin, netWmState, 0, 32, False, XA_ATOM,
+                           &stType, &stFmt, &stItems, &stAfter, &stProp) != Success || !stProp) {
+        return false;
+    }
+    bool isFs = false;
+    Atom* atoms = (Atom*)stProp;
+    for (unsigned long i = 0; i < stItems; ++i) {
+        if (atoms[i] == netWmFs) { isFs = true; break; }
+    }
+    XFree(stProp);
+    (void)app;
+    return isFs;
 }
 
 static void getDefaultOrigin(int w, int h, int& outX, int& outY) {
@@ -727,6 +800,15 @@ static void showPopupMenu(LinuxApp& app, GdkEventButton* evt) {
         applyWindowScaleAndPos(*g_app, false);
     }));
 
+    addCheck(tr("全屏应用时自动隐藏", "Auto-Hide in Fullscreen Apps"), app.settings.autoHideFullscreen, G_CALLBACK(+[](GtkCheckMenuItem* item, gpointer) {
+        g_app->settings.autoHideFullscreen = gtk_check_menu_item_get_active(item);
+        g_app->settings.save();
+        if (!g_app->settings.autoHideFullscreen && g_app->hiddenByFullscreen) {
+            g_app->hiddenByFullscreen = false;
+            if (g_app->isVisible) gtk_widget_show(g_app->window);
+        }
+    }));
+
     addCheck(tr("开机自动启动", "Launch at Login"), isAutoStartEnabled(), G_CALLBACK(+[](GtkCheckMenuItem* item, gpointer) {
         setAutoStartEnabled(gtk_check_menu_item_get_active(item));
     }));
@@ -761,16 +843,25 @@ static void showPopupMenu(LinuxApp& app, GdkEventButton* evt) {
                 int m = (int)(intptr_t)p;
                 g_app->settings.obsCaptureMode = m;
                 g_app->settings.save();
-                bool hideFromTaskbar = (m == 0);
-                gtk_window_set_skip_taskbar_hint(GTK_WINDOW(g_app->window), hideFromTaskbar);
-                gtk_window_set_skip_pager_hint(GTK_WINDOW(g_app->window), hideFromTaskbar);
-                gtk_widget_queue_draw(g_app->drawArea);
+                applyOBSMode(*g_app);
             }), (gpointer)(intptr_t)mode);
             gtk_menu_shell_append(GTK_MENU_SHELL(sub), it);
         };
         addObs(tr("关闭（正常桌面悬浮）", "Off (Normal Overlay)"), 0);
         addObs(tr("OBS 透明窗口捕获", "OBS Transparent Window Capture"), 1);
         addObs(tr("OBS 绿幕模式 (#00FF00)", "OBS Green Screen (#00FF00)"), 2);
+        gtk_menu_shell_append(GTK_MENU_SHELL(sub), gtk_separator_menu_item_new());
+        GtkWidget* bgItem = gtk_check_menu_item_new_with_label(tr("后台捕获（隐藏桌面小猫，OBS仍正常捕获）", "Background Capture (Hide on Desktop, Keep OBS Live)"));
+        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(bgItem), app.settings.obsHideDesktop);
+        g_signal_connect(bgItem, "toggled", G_CALLBACK(+[](GtkCheckMenuItem* item, gpointer) {
+            g_app->settings.obsHideDesktop = gtk_check_menu_item_get_active(item);
+            if (g_app->settings.obsHideDesktop && g_app->settings.obsCaptureMode == 0) {
+                g_app->settings.obsCaptureMode = 1;
+            }
+            g_app->settings.save();
+            applyOBSMode(*g_app);
+        }), nullptr);
+        gtk_menu_shell_append(GTK_MENU_SHELL(sub), bgItem);
         GtkWidget* parent = gtk_menu_item_new_with_label(tr("📺 直播捕获模式 (OBS)", "📺 OBS Live Capture Mode"));
         gtk_menu_item_set_submenu(GTK_MENU_ITEM(parent), sub);
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), parent);
@@ -981,7 +1072,9 @@ static gboolean onButtonPress(GtkWidget*, GdkEventButton* evt, gpointer) {
         g_app->isDragging = true;
         g_app->dragStartRootX = evt->x_root;
         g_app->dragStartRootY = evt->y_root;
+        g_app->lastDragRootX = evt->x_root;
         gtk_window_get_position(GTK_WINDOW(g_app->window), &g_app->dragStartWinX, &g_app->dragStartWinY);
+        g_app->physics.setDragging(true, 0.0f);
         return TRUE;
     }
     return FALSE;
@@ -1006,6 +1099,9 @@ static gboolean onMotionNotify(GtkWidget*, GdkEventMotion* evt, gpointer) {
     if (g_app->isDragging) {
         int nx = g_app->dragStartWinX + (int)std::round(evt->x_root - g_app->dragStartRootX);
         int ny = g_app->dragStartWinY + (int)std::round(evt->y_root - g_app->dragStartRootY);
+        float dx = (float)(evt->x_root - g_app->lastDragRootX);
+        g_app->lastDragRootX = evt->x_root;
+        g_app->physics.setDragging(true, dx);
         gtk_window_move(GTK_WINDOW(g_app->window), nx, ny);
         return TRUE;
     }
@@ -1022,6 +1118,7 @@ static gboolean onButtonRelease(GtkWidget*, GdkEventButton* evt, gpointer) {
     }
     if (evt->button == 1 && g_app->isDragging) {
         g_app->isDragging = false;
+        g_app->physics.setDragging(false, 0.0f);
         gtk_window_get_position(GTK_WINDOW(g_app->window), &g_app->settings.posX, &g_app->settings.posY);
         g_app->settings.save();
         return TRUE;
@@ -1070,6 +1167,23 @@ static gboolean onFrameTick(gpointer) {
     }
 
     double now = nowSeconds();
+    if (now - g_app->lastFullscreenCheck > 0.5) {
+        g_app->lastFullscreenCheck = now;
+        bool obsBg = (g_app->settings.obsCaptureMode > 0 && g_app->settings.obsHideDesktop);
+        if (g_app->settings.autoHideFullscreen && !obsBg) {
+            bool fs = isOtherWindowFullscreen(*g_app);
+            if (fs && !g_app->hiddenByFullscreen) {
+                g_app->hiddenByFullscreen = true;
+                gtk_widget_hide(g_app->window);
+            } else if (!fs && g_app->hiddenByFullscreen) {
+                g_app->hiddenByFullscreen = false;
+                if (g_app->isVisible) gtk_widget_show(g_app->window);
+            }
+        } else if (g_app->hiddenByFullscreen) {
+            g_app->hiddenByFullscreen = false;
+            if (g_app->isVisible) gtk_widget_show(g_app->window);
+        }
+    }
     float dt = (float)(now - g_app->lastTickTime);
     g_app->lastTickTime = now;
     if (dt <= 0.0f || dt > 0.5f) dt = 1.0f / 30.0f;

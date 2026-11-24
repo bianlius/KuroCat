@@ -80,7 +80,7 @@ enum CatRenderer {
         }
 
         let cx = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
-        let breath = sin(physics.time * 2.1) * 1.6
+        let breath = physics.breathingOffset
         let siameseLift: CGFloat = (CatSettings.shared.coatTheme == .siamese) ? -3.0 : 0.0
         let headCenter = CGPoint(x: cx + physics.bodyTilt.value * 42, y: 124 + siameseLift + physics.headOffsetY.value + breath)
 
@@ -130,7 +130,9 @@ enum CatRenderer {
         drawMouse(in: ctx, physics: physics, theme: settings.keyboardTheme)
 
         // 2. Mini Angled 65% Mechanical Keyboard + Dynamic Keycap Glow
-        let keyboardDeck = drawKeyboard(in: ctx, physics: physics, theme: settings.keyboardTheme, eyeTheme: settings.eyeTheme, showLegends: settings.showKeyLegends, marquee: settings.keyboardMarquee)
+        let keyboardDeck = drawKeyboard(in: ctx, physics: physics, theme: settings.keyboardTheme,
+                                        eyeTheme: settings.eyeTheme, showLegends: settings.showKeyLegends,
+                                        flipped: flipped, marquee: settings.keyboardMarquee)
 
         if coat == .doraemon, let renderer = DoraemonRenderer.bundled {
             renderer.draw(in: ctx, physics: physics, eyeColor: settings.eyeTheme.primaryColor.cgColor, keyboardDeck: keyboardDeck)
@@ -164,20 +166,19 @@ enum CatRenderer {
     }
 
     private static func drawCat(in ctx: CGContext, physics: CatPhysics, coat: CatCoatTheme, eyeTheme: EyeColorTheme) {
-        let breath = sin(physics.time * 2.1) * 1.6
+        let breath = physics.breathingOffset
         let seatX = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
-        let seatY = CatPhysics.seatAnchor.y
+        let scruff = max(0, min(1, physics.scruffDrag.value))
+        let lie = max(0, min(1, physics.lieIntensity.value))
+        let dizzy = max(0, min(1, physics.dizzyIntensity.value))
+        let seatY = CatPhysics.seatAnchor.y - scruff * 22.0 + lie * 16.0 + dizzy * 14.0
 
         if physics.tailTyping.value < 0.5 {
-            drawTail(in: ctx, seatX: seatX, seatY: seatY, physics: physics, coat: coat)
+            drawTail(in: ctx, physics: physics, coat: coat)
         }
 
         // 4. 3D-Projected Ears (behind crown silhouette so Siamese seal-point ears emerge cleanly from cream skull!)
-        let siameseLift: CGFloat = (coat == .siamese) ? -3.0 : 0.0
-        let headCenter = CGPoint(
-            x: seatX + physics.bodyTilt.value * 36 + physics.headYaw.value * 7.5,
-            y: 126 + siameseLift + physics.headOffsetY.value + physics.headPitch.value * 4.8 + breath * 1.1
-        )
+        let headCenter = headPosition(physics, coat: coat)
         drawEarsLayer(in: ctx, center: headCenter, physics: physics, coat: coat)
 
         // 5. Unified C1-Continuous Head + Neck + Pear Torso Silhouette + Siamese 2.5D Face Mask
@@ -202,7 +203,7 @@ enum CatRenderer {
         // 8. Front Arms / Paws (over torso & keyboard/mouse with crisp separation outlines / Siamese chocolate socks!)
         drawFrontPaws(in: ctx, seatX: seatX, seatY: seatY, breath: breath, physics: physics, coat: coat)
         if physics.tailTyping.value >= 0.5 {
-            drawTail(in: ctx, seatX: seatX, seatY: seatY, physics: physics, coat: coat)
+            drawTail(in: ctx, physics: physics, coat: coat)
         }
     }
 
@@ -277,6 +278,15 @@ enum CatRenderer {
         NSGraphicsContext.restoreGraphicsState()
 
         ctx.restoreGState()
+    }
+
+    static func headPosition(_ physics: CatPhysics, coat: CatCoatTheme) -> CGPoint {
+        let siameseLift: CGFloat = coat == .siamese ? -3 : 0
+        let scruff = max(0, min(1, physics.scruffDrag.value))
+        return CGPoint(
+            x: CatPhysics.seatAnchor.x + physics.bodyShiftX.value + physics.bodyTilt.value * 36 + physics.headYaw.value * 7.5,
+            y: 126 + siameseLift + physics.headOffsetY.value + physics.headPitch.value * 4.8 + physics.breathingOffset * 1.1 - scruff * 22.0
+        )
     }
 
     // MARK: - Mini White Mouse
@@ -363,14 +373,116 @@ enum CatRenderer {
 
     // MARK: - Mini Angled 65% Mechanical Keyboard (facing the cat!)
 
+    private struct KeyboardBitmap {
+        let image: CGImage
+        let bounds: CGRect
+
+        init?(bounds: CGRect, scale: CGSize, draw: (CGContext) -> Void) {
+            let pixels = CGRect(x: bounds.minX * scale.width, y: bounds.minY * scale.height,
+                                width: bounds.width * scale.width, height: bounds.height * scale.height).integral
+            guard let ctx = CGContext(data: nil, width: Int(pixels.width), height: Int(pixels.height),
+                                      bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+            ctx.translateBy(x: -pixels.minX, y: pixels.maxY)
+            ctx.scaleBy(x: scale.width, y: -scale.height)
+            ctx.setAllowsAntialiasing(true)
+            ctx.setShouldAntialias(true)
+            draw(ctx)
+            guard let image = ctx.makeImage() else { return nil }
+            self.image = image
+            self.bounds = CGRect(x: pixels.minX / scale.width, y: pixels.minY / scale.height,
+                                 width: pixels.width / scale.width, height: pixels.height / scale.height)
+        }
+
+        func draw(in ctx: CGContext) {
+            ctx.saveGState()
+            ctx.translateBy(x: bounds.minX, y: bounds.maxY)
+            ctx.scaleBy(x: 1, y: -1)
+            ctx.draw(image, in: CGRect(origin: .zero, size: bounds.size))
+            ctx.restoreGState()
+        }
+    }
+
+    private struct KeyboardStyle: Equatable {
+        let theme: KeyboardTheme
+        let showLegends: Bool
+        let flipped: Bool
+        let scale: CGSize
+    }
+
+    private struct KeyboardArtwork {
+        let style: KeyboardStyle
+        let chassis: KeyboardBitmap?
+        let idle: KeyboardBitmap?
+        let keys: [KeyboardKeyArtwork]
+        let deckPath: CGPath
+        let deckStart: CGPoint
+        let deckEnd: CGPoint
+    }
+
+    private struct KeyboardKeyArtwork {
+        let key: PhysicalKey
+        let center: CGPoint
+        let path: CGPath
+        let fill: NSColor
+        let border: CGColor
+        let legend: KeyboardBitmap?
+        let resting: KeyboardBitmap?
+    }
+
+    // Keep only the currently displayed keyboard. Retina scale can change when the window moves screens.
+    private static var keyboardArtwork: KeyboardArtwork?
+
     private static func drawKeyboard(
         in ctx: CGContext,
         physics: CatPhysics,
         theme: KeyboardTheme,
         eyeTheme: EyeColorTheme,
         showLegends: Bool,
+        flipped: Bool,
         marquee: Bool
     ) -> CGPath {
+        let transform = ctx.userSpaceToDeviceSpaceTransform
+        // Round up in quarter steps so dragging a resize handle does not rebuild the cache every tick.
+        func rasterScale(_ value: CGFloat) -> CGFloat { min(4, max(1, (value * 4).rounded(.up) / 4)) }
+        let scale = CGSize(width: rasterScale(hypot(transform.a, transform.b)),
+                           height: rasterScale(hypot(transform.c, transform.d)))
+        let style = KeyboardStyle(theme: theme, showLegends: showLegends, flipped: flipped, scale: scale)
+        let artwork: KeyboardArtwork
+        if let cached = keyboardArtwork, cached.style == style {
+            artwork = cached
+        } else {
+            artwork = makeKeyboardArtwork(style: style)
+            keyboardArtwork = artwork
+        }
+
+        let glowBaseColor = eyeTheme.glowColor
+        if !marquee, physics.keyGlow.isEmpty, let idle = artwork.idle {
+            idle.draw(in: ctx)
+        } else {
+            artwork.chassis?.draw(in: ctx)
+            let phase = physics.marqueePhase.truncatingRemainder(dividingBy: 1)
+            let backlight = marquee
+                ? KeyboardMarquee(phase: phase, color: hsvColor(hue: phase + 0.52, saturation: 0.55, value: 1),
+                                  start: artwork.deckStart, end: artwork.deckEnd)
+                : nil
+            if let backlight { drawMarquee(backlight, in: ctx, clippedTo: artwork.deckPath) }
+            for key in artwork.keys {
+                drawKeyboardKey(key, in: ctx, glow: physics.keyGlow[key.key] ?? 0,
+                                glowColor: glowBaseColor, backlight: backlight)
+            }
+        }
+
+        // Signature soft chartreuse backlit glow halos on active keys!
+        for (key, glow) in physics.keyGlow where glow > 0.05 {
+            let center = KeyboardLayout.canvasPoint(for: key)
+            drawRadialGlow(in: ctx, center: center, radius: 17.0 + glow * 6.0,
+                           color: glowBaseColor.withAlphaComponent(0.36 * glow))
+        }
+        return artwork.deckPath
+    }
+
+    private static func makeKeyboardArtwork(style: KeyboardStyle) -> KeyboardArtwork {
         let tl = KeyboardLayout.screenQuadPoint(su: -0.012, sv: -0.04)
         let tr = KeyboardLayout.screenQuadPoint(su: 1.012, sv: -0.04)
         let bl = KeyboardLayout.screenQuadPoint(su: -0.016, sv: 1.04)
@@ -378,8 +490,6 @@ enum CatRenderer {
 
         let caseDepth: CGFloat = 4.5
 
-        // Soft ambient drop shadow beneath keyboard
-        ctx.saveGState()
         let shadowPath = roundedQuadPath(
             tl: CGPoint(x: tl.x, y: tl.y + caseDepth + 2),
             tr: CGPoint(x: tr.x, y: tr.y + caseDepth + 2),
@@ -387,10 +497,6 @@ enum CatRenderer {
             bl: CGPoint(x: bl.x, y: bl.y + caseDepth + 3),
             radius: 6
         )
-        ctx.setFillColor(NSColor(calibratedWhite: 0, alpha: 0.22).cgColor)
-        ctx.addPath(shadowPath)
-        ctx.fillPath()
-        ctx.restoreGState()
 
         // Dark 3D chassis lower lip
         let baseColor: NSColor
@@ -399,7 +505,7 @@ enum CatRenderer {
         let keyBorderColor: NSColor
         let accentColor: NSColor
 
-        switch theme {
+        switch style.theme {
         case .classicMilk:
             baseColor = NSColor(calibratedRed: 0.10, green: 0.10, blue: 0.12, alpha: 1.0)
             deckColor = NSColor(calibratedRed: 0.14, green: 0.14, blue: 0.16, alpha: 1.0)
@@ -427,132 +533,57 @@ enum CatRenderer {
             bl: CGPoint(x: bl.x, y: bl.y + caseDepth),
             radius: 5.5
         )
-        ctx.setFillColor(baseColor.cgColor)
-        ctx.addPath(lowerChassis)
-        ctx.fillPath()
-
         let topChassis = roundedQuadPath(tl: tl, tr: tr, br: br, bl: bl, radius: 5.0)
-        ctx.setFillColor(deckColor.cgColor)
-        ctx.addPath(topChassis)
-        ctx.fillPath()
-
-        // Keyboard marquee backlight: a comet of light sweeps diagonally under the keycaps
-        // (bright head, long fading tail, one full hue cycle per sweep so the deck reads as RGB).
-        let mqHead = physics.marqueePhase.truncatingRemainder(dividingBy: 1.0)
-        let mqCol = hsvColor(hue: mqHead + 0.52, saturation: 0.55, value: 1.0)
-        let bandDx = br.x - tl.x, bandDy = br.y - tl.y
-        let bandLen2 = bandDx * bandDx + bandDy * bandDy
-        func mqWave(_ t: CGFloat) -> CGFloat {
-            guard marquee else { return 0 }
-            var d = mqHead - t
-            if d < 0 { d += 1 }
-            return CGFloat(exp(-Double(d / 0.125)))
-        }
-        if marquee {
-            ctx.saveGState()
+        let bounds = shadowPath.boundingBoxOfPath.union(lowerChassis.boundingBoxOfPath)
+            .union(topChassis.boundingBoxOfPath).insetBy(dx: -2, dy: -2)
+        let chassis = KeyboardBitmap(bounds: bounds, scale: style.scale) { ctx in
+            ctx.setFillColor(NSColor(calibratedWhite: 0, alpha: 0.22).cgColor)
+            ctx.addPath(shadowPath)
+            ctx.fillPath()
+            ctx.setFillColor(baseColor.cgColor)
+            ctx.addPath(lowerChassis)
+            ctx.fillPath()
+            ctx.setFillColor(deckColor.cgColor)
             ctx.addPath(topChassis)
-            ctx.clip()
-            let stopCount = 24
-            var mqColors: [CGColor] = []
-            var mqPos: [CGFloat] = []
-            for i in 0..<stopCount {
-                let t = CGFloat(i) / CGFloat(stopCount - 1)
-                mqPos.append(t)
-                mqColors.append(mqCol.withAlphaComponent(min(1.0, mqWave(t) * 200.0 / 255.0)).cgColor)
-            }
-            if let band = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                                     colors: mqColors as CFArray, locations: mqPos) {
-                ctx.drawLinearGradient(band, start: tl, end: br,
-                                       options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
-            }
-            // White-hot lamp at the head of the comet.
-            let head = CGPoint(x: tl.x + bandDx * mqHead, y: tl.y + bandDy * mqHead)
-            drawRadialGlow(in: ctx, center: head, radius: 44.0,
-                           color: NSColor(calibratedRed: 240.0/255.0, green: 252.0/255.0,
-                                          blue: 1.0, alpha: 150.0/255.0))
-            ctx.restoreGState()
+            ctx.fillPath()
         }
 
         // Individual keycaps — tight clean mechanical spacing matching the reference video
         let padU: CGFloat = 0.0028
         let padV: CGFloat = 0.014
-        let glowBaseColor = eyeTheme.glowColor
+        let border = keyBorderColor.cgColor
 
-        for cap in KeyboardLayout.keycaps {
-            let glow = physics.keyGlow[cap.key] ?? 0
+        let keys = KeyboardLayout.keycaps.map { cap in
             // 180° rotated to face the cat: su = 1 - u, sv = 1 - v
             let su0 = (1.0 - (cap.xUnits + cap.widthUnits)) + padU
             let su1 = (1.0 - cap.xUnits) - padU
             let sv0 = (1.0 - CGFloat(cap.row + 1) / 5.0) + padV
             let sv1 = (1.0 - CGFloat(cap.row) / 5.0) - padV
 
-            let pressDy = glow * 1.9
-            let kTL = offsetY(KeyboardLayout.screenQuadPoint(su: su0, sv: sv0), pressDy)
-            let kTR = offsetY(KeyboardLayout.screenQuadPoint(su: su1, sv: sv0), pressDy)
-            let kBR = offsetY(KeyboardLayout.screenQuadPoint(su: su1, sv: sv1), pressDy)
-            let kBL = offsetY(KeyboardLayout.screenQuadPoint(su: su0, sv: sv1), pressDy)
+            let kTL = KeyboardLayout.screenQuadPoint(su: su0, sv: sv0)
+            let kTR = KeyboardLayout.screenQuadPoint(su: su1, sv: sv0)
+            let kBR = KeyboardLayout.screenQuadPoint(su: su1, sv: sv1)
+            let kBL = KeyboardLayout.screenQuadPoint(su: su0, sv: sv1)
 
             let kPath = roundedQuadPath(tl: kTL, tr: kTR, br: kBR, bl: kBL, radius: 1.6)
-
-            // Where this keycap sits along the marquee axis, and how bright the comet makes it.
-            let kcx = (kTL.x + kTR.x + kBR.x + kBL.x) * 0.25
-            let kcy = (kTL.y + kTR.y + kBR.y + kBL.y) * 0.25
-            let kt = max(0, min(1, ((kcx - tl.x) * bandDx + (kcy - tl.y) * bandDy) / bandLen2))
-            let mq = mqWave(kt)
-
-            var fill = cap.isAmberAccent ? accentColor : keyColor
-            if mq > 0.015 {
-                // Head of the comet reads hot (near white), the trailing keys stay saturated.
-                let lit = blendColor(mqCol, .white, t: mq * mq * 0.5)
-                fill = blendColor(fill, lit, t: max(0, min(0.9, mq * 0.88)))
-            }
-            if glow > 0.02 {
-                fill = blendColor(fill, glowBaseColor, t: glow * 0.55)
-            }
-
-            ctx.setFillColor(fill.cgColor)
-            ctx.addPath(kPath)
-            ctx.fillPath()
-
-            if mq > 0.10 {
-                ctx.setStrokeColor(mqCol.withAlphaComponent(min(1.0, mq * 215.0 / 255.0)).cgColor)
-                ctx.setLineWidth(1.0)
-                ctx.addPath(kPath)
-                ctx.strokePath()
-            } else {
-                ctx.setStrokeColor(keyBorderColor.cgColor)
-                ctx.setLineWidth(0.65)
-                ctx.addPath(kPath)
-                ctx.strokePath()
-            }
-
-            // Under-key bloom where the beam is hottest, so the light spills between caps.
-            if mq > 0.45 {
-                let bloom = (mq - 0.45) / 0.55
-                ctx.saveGState()
-                ctx.translateBy(x: kcx, y: kcy)
-                ctx.scaleBy(x: 15.0, y: 10.5)
-                drawRadialGlow(in: ctx, center: .zero, radius: 1.0,
-                               color: mqCol.withAlphaComponent(min(1.0, bloom * 135.0 / 255.0)))
-                ctx.restoreGState()
-            }
-
-            if showLegends {
+            let center = CGPoint(x: (kTL.x + kTR.x + kBR.x + kBL.x) * 0.25,
+                                 y: (kTL.y + kTR.y + kBR.y + kBL.y) * 0.25)
+            let fill = cap.isAmberAccent ? accentColor : keyColor
+            let keyBounds = kPath.boundingBoxOfPath.insetBy(dx: -2, dy: -2)
+            var legendBitmap: KeyboardBitmap?
+            if style.showLegends {
                 let isSpace = cap.key == .space
                 let legend = isSpace ? "space" : keycapLegend(cap.key)
                 if !legend.isEmpty {
-                    var cx = (kTL.x + kTR.x + kBR.x + kBL.x) * 0.25
-                    var cy = (kTL.y + kTR.y + kBR.y + kBL.y) * 0.25
+                    var labelCenter = center
                     if isSpace {
                         // The spacebar sits right under the cat: its legs hide the middle, and an
                         // unlabeled visible end looked like an odd blank patch beside the cat.
                         // Label the end that stays visible instead.
-                        let sp = KeyboardLayout.screenQuadPoint(su: su0 + (su1 - su0) * 0.82, sv: (sv0 + sv1) * 0.5)
-                        cx = sp.x
-                        cy = sp.y + pressDy
+                        labelCenter = KeyboardLayout.screenQuadPoint(su: su0 + (su1 - su0) * 0.82, sv: (sv0 + sv1) * 0.5)
                     }
                     let textColor: NSColor
-                    if cap.isAmberAccent || theme != .midnightHacker {
+                    if cap.isAmberAccent || style.theme != .midnightHacker {
                         textColor = NSColor(calibratedRed: 0.14, green: 0.14, blue: 0.16, alpha: 0.78)
                     } else {
                         textColor = NSColor(calibratedRed: 0.88, green: 0.90, blue: 0.92, alpha: 0.82)
@@ -563,39 +594,147 @@ enum CatRenderer {
                         .foregroundColor: textColor
                     ]
                     let str = NSAttributedString(string: legend, attributes: attrs)
-                    let sz = str.size()
-                    ctx.saveGState()
-                    ctx.translateBy(x: cx, y: cy)
+                    let size = str.size()
+                    let textRect = CGRect(x: -size.width * 0.5, y: -size.height * 0.5,
+                                          width: size.width, height: size.height)
                     // Keyboard faces the cat (180°), so legends read upright from the cat's seat.
-                    ctx.rotate(by: .pi + 0.052)
-                    if CatSettings.shared.flipHorizontal {
-                        ctx.scaleBy(x: -1, y: 1)
+                    var transform = CGAffineTransform(translationX: labelCenter.x, y: labelCenter.y).rotated(by: .pi + 0.052)
+                    if style.flipped { transform = transform.scaledBy(x: -1, y: 1) }
+                    legendBitmap = KeyboardBitmap(bounds: textRect.applying(transform).insetBy(dx: -2, dy: -2),
+                                                  scale: style.scale) { ctx in
+                        ctx.concatenate(transform)
+                        NSGraphicsContext.saveGraphicsState()
+                        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+                        str.draw(at: textRect.origin)
+                        NSGraphicsContext.restoreGraphicsState()
                     }
-                    NSGraphicsContext.saveGraphicsState()
-                    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
-                    str.draw(at: CGPoint(x: -sz.width * 0.5, y: -sz.height * 0.5))
-                    NSGraphicsContext.restoreGraphicsState()
-                    ctx.restoreGState()
                 }
             }
+            let restingBounds = legendBitmap.map { keyBounds.union($0.bounds) } ?? keyBounds
+            let resting = KeyboardBitmap(bounds: restingBounds, scale: style.scale) { ctx in
+                drawKeycap(in: ctx, path: kPath, fill: fill.cgColor, border: border)
+                legendBitmap?.draw(in: ctx)
+            }
+            return KeyboardKeyArtwork(key: cap.key, center: center, path: kPath, fill: fill, border: border,
+                                      legend: legendBitmap, resting: resting)
         }
 
-        // Signature soft chartreuse backlit glow halos on active keys!
-        for (key, glow) in physics.keyGlow where glow > 0.05 {
-            let center = KeyboardLayout.canvasPoint(for: key)
-            drawRadialGlow(
-                in: ctx,
-                center: center,
-                radius: 17.0 + glow * 6.0,
-                color: glowBaseColor.withAlphaComponent(0.36 * glow)
-            )
+        let idle = KeyboardBitmap(bounds: bounds, scale: style.scale) { ctx in
+            chassis?.draw(in: ctx)
+            for key in keys {
+                drawKeyboardKey(key, in: ctx, glow: 0, glowColor: accentColor)
+            }
         }
-        return topChassis
+        return KeyboardArtwork(style: style, chassis: chassis, idle: idle, keys: keys,
+                               deckPath: topChassis, deckStart: tl, deckEnd: br)
+    }
+
+    private static func drawKeyboardKey(_ key: KeyboardKeyArtwork, in ctx: CGContext, glow: CGFloat,
+                                        glowColor: NSColor, backlight: KeyboardMarquee? = nil) {
+        if backlight == nil, glow == 0, let resting = key.resting {
+            resting.draw(in: ctx)
+            return
+        }
+
+        let pressDepth = glow * 1.9
+        let center = CGPoint(x: key.center.x, y: key.center.y + pressDepth)
+        let illumination = backlight?.illumination(at: center) ?? 0
+        var color = key.fill
+        if let backlight, illumination > 0.015 {
+            let lit = blendColor(backlight.color, .white, t: illumination * illumination * 0.5)
+            color = blendColor(color, lit, t: illumination * 0.88)
+        }
+        if glow > 0.02 {
+            color = blendColor(color, glowColor, t: glow * 0.55)
+        }
+
+        ctx.saveGState()
+        ctx.translateBy(x: 0, y: pressDepth)
+        if let backlight, illumination > 0.10 {
+            let border = backlight.color.withAlphaComponent(illumination * 215.0 / 255.0).cgColor
+            drawKeycap(in: ctx, path: key.path, fill: color.cgColor, border: border, borderWidth: 1.0)
+        } else {
+            drawKeycap(in: ctx, path: key.path, fill: color.cgColor, border: key.border)
+        }
+        if let backlight, illumination > 0.45 {
+            ctx.saveGState()
+            ctx.translateBy(x: key.center.x, y: key.center.y)
+            ctx.scaleBy(x: 15.0, y: 10.5)
+            let bloom = (illumination - 0.45) / 0.55
+            drawRadialGlow(in: ctx, center: .zero, radius: 1.0,
+                           color: backlight.color.withAlphaComponent(bloom * 135.0 / 255.0))
+            ctx.restoreGState()
+        }
+        key.legend?.draw(in: ctx)
+        ctx.restoreGState()
+    }
+
+    private static func drawKeycap(in ctx: CGContext, path: CGPath, fill: CGColor, border: CGColor,
+                                   borderWidth: CGFloat = 0.65) {
+        ctx.setFillColor(fill)
+        ctx.setStrokeColor(border)
+        ctx.setLineWidth(borderWidth)
+        ctx.addPath(path)
+        ctx.drawPath(using: .fillStroke)
+    }
+
+    private struct KeyboardMarquee {
+        let phase: CGFloat
+        let color: NSColor
+        let start: CGPoint
+        let end: CGPoint
+        let dx: CGFloat
+        let dy: CGFloat
+        let lengthSquared: CGFloat
+
+        init(phase: CGFloat, color: NSColor, start: CGPoint, end: CGPoint) {
+            self.phase = phase
+            self.color = color
+            self.start = start
+            self.end = end
+            dx = end.x - start.x
+            dy = end.y - start.y
+            lengthSquared = dx * dx + dy * dy
+        }
+
+        func illumination(at center: CGPoint) -> CGFloat {
+            let t = ((center.x - start.x) * dx + (center.y - start.y) * dy) / lengthSquared
+            return wave(at: max(0, min(1, t)))
+        }
+
+        func wave(at t: CGFloat) -> CGFloat {
+            let distance = phase - t
+            return exp(-(distance < 0 ? distance + 1 : distance) / 0.125)
+        }
+    }
+
+    private static func drawMarquee(_ light: KeyboardMarquee, in ctx: CGContext, clippedTo deck: CGPath) {
+        ctx.saveGState()
+        ctx.addPath(deck)
+        ctx.clip()
+        let stops = (0..<24).map { CGFloat($0) / 23 }
+        let colors = stops.map { stop in
+            light.color.withAlphaComponent(light.wave(at: stop) * 200.0 / 255.0).cgColor
+        }
+        if let band = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray, locations: stops) {
+            ctx.drawLinearGradient(band, start: light.start, end: light.end,
+                                   options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+        }
+        let head = CGPoint(x: light.start.x + light.dx * light.phase, y: light.start.y + light.dy * light.phase)
+        drawRadialGlow(in: ctx, center: head, radius: 44.0,
+                       color: NSColor(calibratedRed: 240.0 / 255, green: 252.0 / 255, blue: 1, alpha: 150.0 / 255))
+        ctx.restoreGState()
     }
 
     // MARK: - Tail
 
-    private static func drawTail(in ctx: CGContext, seatX: CGFloat, seatY: CGFloat, physics: CatPhysics, coat: CatCoatTheme) {
+    static func tailCurve(_ physics: CatPhysics)
+        -> (root: CGPoint, control1: CGPoint, control2: CGPoint, tip: CGPoint) {
+        let seatX = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
+        let scruff = max(0, min(1, physics.scruffDrag.value))
+        let lie = max(0, min(1, physics.lieIntensity.value))
+        let dizzy = max(0, min(1, physics.dizzyIntensity.value))
+        let seatY = CatPhysics.seatAnchor.y - scruff * 22.0 + lie * 16.0 + dizzy * 14.0
         let p = physics.tailPhase
         let hunt = max(0, min(1, physics.huntIntensity.value))
         let agility = max(0, min(1, physics.tailAgility.value))
@@ -617,6 +756,11 @@ enum CatRenderer {
         let idleTip = CGPoint(x: seatX + 91 + wag2 * 0.5 + fx, y: seatY - 30 + wag1 * 0.85 + huntDrop + fy)
         let c2 = CGPoint(x: idleC2.x + (target.x + 24 - idleC2.x) * reach, y: idleC2.y + (target.y - 30 - idleC2.y) * reach)
         let tip = CGPoint(x: idleTip.x + (target.x - idleTip.x) * reach, y: idleTip.y + (target.y - idleTip.y) * reach)
+        return (root, c1, c2, tip)
+    }
+
+    private static func drawTail(in ctx: CGContext, physics: CatPhysics, coat: CatCoatTheme) {
+        let (root, c1, c2, tip) = tailCurve(physics)
 
         ctx.saveGState()
         let tailColor = earTailColor(coat)
@@ -1046,6 +1190,51 @@ enum CatRenderer {
         // 2. 3D-Projected Whiskers (outer-side whiskers poke out past silhouette when turning!)
         drawWhiskers3D(in: ctx, yawRad: yawRad, pitchRad: pitchRad, physics: physics, coat: coat)
 
+        // 3. Expressive emotion badges: Anger vein (💢) & Dizzy orbiting stars (✦) & Scruff pinch!
+        let anger = max(0, min(1, physics.angerIntensity.value))
+        if anger > 0.25 {
+            let aAlpha = min(1.0, (anger - 0.25) / 0.35)
+            let pulse = 1.0 + sin(physics.time * 14.0) * 0.10
+            let pt = projectHead3D(x: 28.0, y: -22.0, z: 24.0, yawRad: yawRad, pitchRad: pitchRad).pt
+            ctx.saveGState()
+            ctx.translateBy(x: pt.x, y: pt.y)
+            ctx.scaleBy(x: pulse, y: pulse)
+            ctx.setStrokeColor(NSColor(calibratedRed: 0.96, green: 0.22, blue: 0.28, alpha: 0.95 * aAlpha).cgColor)
+            ctx.setLineWidth(2.0)
+            ctx.setLineCap(.round)
+            // Classic 4-corner anime anger vein mark
+            let d: CGFloat = 2.4, r: CGFloat = 6.2
+            for (sx, sy): (CGFloat, CGFloat) in [(-1,-1), (1,-1), (-1,1), (1,1)] {
+                ctx.move(to: CGPoint(x: sx * r, y: sy * d))
+                ctx.addQuadCurve(to: CGPoint(x: sx * d, y: sy * r), control: CGPoint(x: sx * d, y: sy * d))
+            }
+            ctx.strokePath()
+            ctx.restoreGState()
+        }
+
+        let dizzy = max(0, min(1, physics.dizzyIntensity.value))
+        if dizzy > 0.25 {
+            let dAlpha = min(1.0, (dizzy - 0.25) / 0.35)
+            ctx.saveGState()
+            for i in 0..<3 {
+                let ang = physics.dizzyPhase * 0.65 + CGFloat(i) * (.pi * 2.0 / 3.0)
+                let sx = cos(ang) * 32.0
+                let sy = -38.0 + sin(ang) * 7.5
+                let starR: CGFloat = 3.8 + sin(ang) * 1.0
+                ctx.setFillColor(NSColor(calibratedRed: 1.0, green: 0.85, blue: 0.22, alpha: 0.92 * dAlpha).cgColor)
+                let sp = CGMutablePath()
+                sp.move(to: CGPoint(x: sx, y: sy - starR))
+                sp.addQuadCurve(to: CGPoint(x: sx + starR, y: sy), control: CGPoint(x: sx + starR * 0.25, y: sy - starR * 0.25))
+                sp.addQuadCurve(to: CGPoint(x: sx, y: sy + starR), control: CGPoint(x: sx + starR * 0.25, y: sy + starR * 0.25))
+                sp.addQuadCurve(to: CGPoint(x: sx - starR, y: sy), control: CGPoint(x: sx - starR * 0.25, y: sy + starR * 0.25))
+                sp.addQuadCurve(to: CGPoint(x: sx, y: sy - starR), control: CGPoint(x: sx - starR * 0.25, y: sy - starR * 0.25))
+                sp.closeSubpath()
+                ctx.addPath(sp)
+                ctx.fillPath()
+            }
+            ctx.restoreGState()
+        }
+
         ctx.restoreGState()
     }
 
@@ -1247,6 +1436,31 @@ enum CatRenderer {
         ctx.translateBy(x: proj.pt.x, y: proj.pt.y)
         ctx.scaleBy(x: foreshortenX, y: foreshortenY)
 
+        // Mode 0: Dizzy spinning spiral eyes (@ @) after 10s of rapid mouse shaking!
+        let dizzy = max(0, min(1, physics.dizzyIntensity.value))
+        if dizzy > 0.25 {
+            ctx.setFillColor(NSColor(calibratedRed: 0.98, green: 0.98, blue: 0.96, alpha: 0.95).cgColor)
+            ctx.fillEllipse(in: CGRect(x: -11.5, y: -11.0, width: 23.0, height: 22.0))
+            ctx.setStrokeColor(NSColor(calibratedRed: 0.14, green: 0.14, blue: 0.18, alpha: 0.95).cgColor)
+            ctx.setLineWidth(1.85)
+            ctx.setLineCap(.round)
+            let spiral = CGMutablePath()
+            let spin = physics.dizzyPhase * (isLeft ? 1.0 : -1.0)
+            for step in 0...42 {
+                let t = CGFloat(step) / 42.0
+                let theta = spin + t * .pi * 5.2
+                let rad = 1.0 + t * 8.6
+                let px = cos(theta) * rad
+                let py = sin(theta) * rad
+                if step == 0 { spiral.move(to: CGPoint(x: px, y: py)) }
+                else { spiral.addLine(to: CGPoint(x: px, y: py)) }
+            }
+            ctx.addPath(spiral)
+            ctx.strokePath()
+            ctx.restoreGState()
+            return
+        }
+
         // Mode 1: Happy closed glowing lime-green curved line eyes (petting head!)
         if physics.isHappyClosedEyes {
             ctx.setStrokeColor(eyeColor.cgColor)
@@ -1373,6 +1587,25 @@ enum CatRenderer {
         }
 
         ctx.restoreGState()
+
+        // Angry furrowed V-brow slant over upper inner corner of each eye when typing super fast!
+        let anger = max(0, min(1, physics.angerIntensity.value))
+        if anger > 0.15 {
+            let lidColor: NSColor = (coat == .siamese) ? siamesePoint : bodyColor(coat)
+            ctx.saveGState()
+            let brow = CGMutablePath()
+            let drop = 7.5 * anger
+            brow.move(to: CGPoint(x: -sign * 13.5, y: -12.5))
+            brow.addLine(to: CGPoint(x: sign * 13.5, y: -12.5))
+            brow.addLine(to: CGPoint(x: sign * 13.5, y: -7.5))
+            brow.addLine(to: CGPoint(x: -sign * 13.5, y: -6.5 + drop))
+            brow.closeSubpath()
+            ctx.setFillColor(lidColor.cgColor)
+            ctx.addPath(brow)
+            ctx.fillPath()
+            ctx.restoreGState()
+        }
+
         ctx.restoreGState()
     }
 
@@ -1436,9 +1669,9 @@ enum CatRenderer {
         func shoulder(_ x: CGFloat) -> CGPoint {
             let sy = physics.bodySquash.value, sx = 1 + (1 - sy) * 0.55
             let c = cos(physics.bodyTilt.value), s = sin(physics.bodyTilt.value)
-            let faceBottom = 126 + siameseLift + physics.headOffsetY.value + physics.headPitch.value * 4.8 + breath * 1.1 + 52
-            return CGPoint(x: seatX + x*sx*c + 43*sy*s,
-                           y: max(seatY + x*sx*s - 43*sy*c, faceBottom))
+            let faceBottom = 126 + siameseLift + physics.headOffsetY.value + physics.headPitch.value * 4.8 + breath * 1.1 + 42
+            return CGPoint(x: seatX + x*sx*c + 58*sy*s,
+                           y: max(seatY + x*sx*s - 58*sy*c, faceBottom))
         }
         let leftShoulder = shoulder(-shX)
         let rightShoulder = shoulder(shX)
@@ -1806,10 +2039,6 @@ enum CatRenderer {
         case .space: return ""
         default: return key.badgeLabel
         }
-    }
-
-    private static func offsetY(_ pt: CGPoint, _ dy: CGFloat) -> CGPoint {
-        CGPoint(x: pt.x, y: pt.y + dy)
     }
 
     private static func quadPoint(_ p0: CGPoint, _ p1: CGPoint, _ p2: CGPoint, t: CGFloat) -> CGPoint {

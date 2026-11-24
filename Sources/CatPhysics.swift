@@ -80,6 +80,14 @@ final class CatSettings {
     var obsCaptureMode: Int {
         didSet { UserDefaults.standard.set(obsCaptureMode, forKey: "KuroCat.OBSCaptureMode") }
     }
+    /// When true in OBS mode, hide cat behind desktop/offscreen while OBS still captures live frames
+    var obsHideDesktop: Bool {
+        didSet { UserDefaults.standard.set(obsHideDesktop, forKey: "KuroCat.OBSHideDesktop") }
+    }
+    /// Automatically hide the pet when another app enters fullscreen
+    var autoHideFullscreen: Bool {
+        didSet { UserDefaults.standard.set(autoHideFullscreen, forKey: "KuroCat.AutoHideFullscreen") }
+    }
     var flipHorizontal: Bool {
         didSet { UserDefaults.standard.set(flipHorizontal, forKey: "KuroCat.FlipHorizontal") }
     }
@@ -121,6 +129,8 @@ final class CatSettings {
         tailEasterEgg = d.object(forKey: "KuroCat.TailEasterEgg") as? Bool ?? true
         keyboardMarquee = d.object(forKey: "KuroCat.KeyboardMarquee") as? Bool ?? true
         obsCaptureMode = d.object(forKey: "KuroCat.OBSCaptureMode") as? Int ?? 0
+        obsHideDesktop = d.object(forKey: "KuroCat.OBSHideDesktop") as? Bool ?? false
+        autoHideFullscreen = d.object(forKey: "KuroCat.AutoHideFullscreen") as? Bool ?? false
         flipHorizontal = d.object(forKey: "KuroCat.FlipHorizontal") as? Bool ?? false
         language = d.string(forKey: "KuroCat.Language") ?? "zh"
         petInteraction = d.object(forKey: "KuroCat.PetInteraction") as? Bool ?? true
@@ -251,6 +261,16 @@ final class CatPhysics {
     var eyeGaze = Spring2D(.zero)    // normalized [-1..1, -1..1]
     var pupilScale = Spring1D(1.0)
     var huntIntensity = Spring1D(0)  // 0 = normal slit pupils, 1 = full hunting crouch + big round boba pupils!
+    var scruffDrag = Spring1D(0)     // 0 = seated, 1 = picked up by neck scruff
+    var scruffSwing = Spring1D(0)    // pendulum sway while dragged horizontally
+    var lieIntensity = Spring1D(0)   // 0 = sitting, 1 = lying cozily on keyboard while idle
+    var angerIntensity = Spring1D(0) // 0 = calm, 1 = angry from very fast typing
+    var dizzyIntensity = Spring1D(0) // 0 = clear, 1 = dizzy spiral eyes + slumped beside keyboard
+    private(set) var dizzyPhase: CGFloat = 0
+    private var isScruffDragging = false
+    private var scruffDragDx: CGFloat = 0
+    private var fastMouseDuration: CGFloat = 0
+    private var dizzyTimer: CGFloat = 0
     var mouseOffset = Spring2D(.zero)
     var mousePressLeft = Spring1D(0)
     var mousePressRight = Spring1D(0)
@@ -273,7 +293,7 @@ final class CatPhysics {
     private(set) var tailPhase: CGFloat = 0
     private var nextBlinkTime: CGFloat = 3.2
     private var blinkProgress: CGFloat = 0 // 0 = open, 1 = closed
-    private var isBlinking = false
+    private(set) var isBlinking = false
     private var blinkTimer: CGFloat = 0
 
     // Petting state
@@ -290,7 +310,7 @@ final class CatPhysics {
     private(set) var sleepiness: CGFloat = 0 // 0 = awake, 1 = napping
     private(set) var yawnAmount: CGFloat = 0 // 0 = closed, 1 = peak wide yawn before sleep
     private var yawnTimer: CGFloat = 0
-    private var isYawning = false
+    private(set) var isYawning = false
     private var hasYawnedThisIdle = false
     private var sleepZCooldown: CGFloat = 0
 
@@ -305,6 +325,8 @@ final class CatPhysics {
         let sleepClose = max(sleepiness * 0.92, yawnAmount * 0.96)
         return min(1.0, max(blinkProgress, max(petClose, sleepClose)))
     }
+
+    var breathingOffset: CGFloat { sin(time * 2.1) * 1.6 }
 
     /// True when eyes should draw the signature glowing lime horizontal closed-eye lines
     var isHappyClosedEyes: Bool {
@@ -381,6 +403,21 @@ final class CatPhysics {
         } else {
             if button == 0 { mousePressLeft.target = 0 }
             else { mousePressRight.target = 0 }
+        }
+    }
+
+    /// Called by OverlayWindow when the user drags the cat window (triggers scruff-pickup posture!).
+    func setDragging(_ dragging: Bool, dragDx: CGFloat = 0) {
+        isScruffDragging = dragging
+        if dragging {
+            scruffDragDx = dragDx
+            sleepiness = 0
+            dizzyTimer = 0
+            fastMouseDuration = 0
+        } else {
+            scruffDragDx = 0
+            // Cute soft squash bounce when set back down
+            bodySquash.velocity -= 1.8
         }
     }
 
@@ -595,8 +632,9 @@ final class CatPhysics {
         }
 
         // 2b. Fast Mouse Movement -> Hunting / Stalking Mode (dilated round boba pupils + low crouch!)
+        // Sustained > 10s of rapid mouse shaking -> Dizzy spiral eyes & slump beside keyboard!
         let mouseSpeed = hypot(curMouseVel.dx, curMouseVel.dy)
-        if mouseSpeed > 1500 && petHeadIntensity < 0.25 && petBodyIntensity < 0.25 {
+        if !isScruffDragging && dizzyTimer <= 0 && mouseSpeed > 1500 && petHeadIntensity < 0.25 && petBodyIntensity < 0.25 {
             // Only rapid mouse shaking/flicking triggers hunting dilation (ignore casual movement)
             let boost = min(1.0, (mouseSpeed - 1500) / 1800.0)
             huntIntensity.target = min(1.0, huntIntensity.target + (0.40 + boost * 1.25) * dt)
@@ -607,6 +645,46 @@ final class CatPhysics {
         }
         huntIntensity.step(dt: dt, stiffness: 85, damping: 16)
         let hunt = max(0, min(1, huntIntensity.value))
+
+        if !isScruffDragging && dizzyTimer <= 0 && hunt > 0.42 {
+            fastMouseDuration += dt
+            if fastMouseDuration >= 10.0 {
+                dizzyTimer = 6.0
+                fastMouseDuration = 0
+                huntIntensity.target = 0
+                sleepiness = 0
+            }
+        } else if dizzyTimer <= 0 {
+            fastMouseDuration = max(0, fastMouseDuration - dt * 1.5)
+        }
+        if dizzyTimer > 0 {
+            dizzyTimer = max(0, dizzyTimer - dt)
+            dizzyIntensity.target = 1.0
+            dizzyPhase += dt * 7.5
+        } else {
+            dizzyIntensity.target = 0.0
+        }
+        dizzyIntensity.step(dt: dt, stiffness: 75, damping: 14)
+        let dizzy = max(0, min(1, dizzyIntensity.value))
+
+        // 2c. Scruff-drag pickup, idle lie-on-keyboard, and fast-typing anger
+        scruffDrag.target = isScruffDragging ? 1.0 : 0.0
+        scruffSwing.target = isScruffDragging ? max(-0.34, min(0.34, -scruffDragDx * 0.018)) : 0.0
+        scruffDragDx *= 0.82
+        scruffDrag.step(dt: dt, stiffness: 170, damping: 16)
+        scruffSwing.step(dt: dt, stiffness: 110, damping: 10)
+        let scruff = max(0, min(1, scruffDrag.value))
+
+        lieIntensity.target = (!isScruffDragging && dizzyTimer <= 0 && sleepiness > 0.65)
+            ? min(1.0, (sleepiness - 0.65) / 0.30) : 0.0
+        lieIntensity.step(dt: dt, stiffness: 55, damping: 14)
+        let lie = max(0, min(1, lieIntensity.value))
+
+        let kpm = CGFloat(engine.currentKPM)
+        angerIntensity.target = (!isScruffDragging && dizzyTimer <= 0 && kpm >= 240)
+            ? min(1.0, (kpm - 240.0) / 140.0) : 0.0
+        angerIntensity.step(dt: dt, stiffness: 70, damping: 14)
+        let anger = max(0, min(1, angerIntensity.value))
 
         // 3. Determine limb targets (Left Paw, Right Paw, 3rd-Key Hind Foot!)
         let tapHoldWindow: CFTimeInterval = 0.14
@@ -672,8 +750,16 @@ final class CatPhysics {
             y: CatPhysics.mouseBaseCenter.y + mouseOffset.point.y
         )
 
-        // Left paw target
-        if let lk = leftKey {
+        // Left paw target (dangles limply during scruff pickup / sprawls when dizzy / tucks when lying)
+        if scruff > 0.35 {
+            leftPaw.target = CGPoint(x: CatPhysics.seatAnchor.x - 16 + scruffSwing.value * 26, y: CatPhysics.seatAnchor.y + 12)
+            leftPawTyping = true
+            leftPawOnMouse = false
+        } else if dizzy > 0.35 {
+            leftPaw.target = CGPoint(x: CatPhysics.seatAnchor.x + 28, y: CatPhysics.seatAnchor.y + 22)
+            leftPawTyping = true
+            leftPawOnMouse = false
+        } else if let lk = leftKey {
             leftPaw.target = KeyboardLayout.canvasPoint(for: lk)
             leftPawTyping = true
             leftPawOnMouse = false
@@ -682,17 +768,23 @@ final class CatPhysics {
             leftPawTyping = false
             leftPawOnMouse = true
         } else {
-            leftPaw.target = CatPhysics.leftPawRest
+            leftPaw.target = CGPoint(x: CatPhysics.leftPawRest.x + lie * 4, y: CatPhysics.leftPawRest.y + lie * 14)
             leftPawTyping = false
             leftPawOnMouse = false
         }
 
         // Right paw target
-        if let rk = rightKey {
+        if scruff > 0.35 {
+            rightPaw.target = CGPoint(x: CatPhysics.seatAnchor.x + 16 + scruffSwing.value * 26, y: CatPhysics.seatAnchor.y + 12)
+            rightPawTyping = true
+        } else if dizzy > 0.35 {
+            rightPaw.target = CGPoint(x: CatPhysics.seatAnchor.x + 68, y: CatPhysics.seatAnchor.y + 26)
+            rightPawTyping = true
+        } else if let rk = rightKey {
             rightPaw.target = KeyboardLayout.canvasPoint(for: rk)
             rightPawTyping = true
         } else {
-            rightPaw.target = CatPhysics.rightPawRest
+            rightPaw.target = CGPoint(x: CatPhysics.rightPawRest.x - lie * 4, y: CatPhysics.rightPawRest.y + lie * 14)
             rightPawTyping = false
         }
 
@@ -750,13 +842,15 @@ final class CatPhysics {
             targetShiftX = (avgX - 184) * 0.14
             targetBodyTilt = (avgX - 184) * 0.0011
         }
-        bodyShiftX.target = max(-16, min(16, targetShiftX))
-        bodyTilt.target = max(-0.12, min(0.12, targetBodyTilt))
-        // Coiled low hunting crouch when chasing a fast-moving mouse!
-        bodySquash.target = 1.0 - hunt * 0.11
+        bodyShiftX.target = max(-16, min(16, targetShiftX)) + dizzy * 48.0
+        bodyTilt.target = max(-0.12, min(0.12, targetBodyTilt)) + scruffSwing.value * scruff + dizzy * 0.46
+        // Coiled low hunting crouch, elongated scruff dangle, or flattened loaf while lying/dizzy!
+        bodySquash.target = 1.0 - hunt * 0.11 + scruff * 0.16 - lie * 0.22 - dizzy * 0.14
 
-        headOffsetY.target = (leftPawTyping || rightPawTyping) ? 3.5 : (sleepiness * 5.0 + hunt * 10.5)
+        headOffsetY.target = ((leftPawTyping || rightPawTyping) ? 3.5 : (sleepiness * 5.0 + hunt * 10.5))
+            - scruff * 10.0 + lie * 34.0 + dizzy * 22.0
         earFold.target = max(petHeadIntensity * 0.7, petBodyIntensity * 0.45) + sleepiness * 0.25 - hunt * 0.18
+            + scruff * 0.35 + anger * 0.45 + dizzy * 0.35
         earTwitch.target = 0
 
         bodyShiftX.step(dt: dt, stiffness: 140, damping: 18)
@@ -854,7 +948,8 @@ final class CatPhysics {
         let petBoost = max(petHeadIntensity, petBodyIntensity) * 1.4
         let huntBoost = hunt * 2.8
         let agilityBoost = max(0, min(1, tailAgility.value)) * 3.2
-        let tailSpeed: CGFloat = 1.85 + kpmBoost + petBoost + huntBoost + agilityBoost - sleepiness * 1.1
+        let angerBoost = anger * 3.5
+        let tailSpeed: CGFloat = 1.85 + kpmBoost + petBoost + huntBoost + agilityBoost + angerBoost - sleepiness * 1.1
         tailPhase += dt * tailSpeed
 
         // 8. Update per-keycap glows

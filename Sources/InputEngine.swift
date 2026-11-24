@@ -79,24 +79,23 @@ final class InputEngine {
 
     private var lastModifierFlags: CGEventFlags = []
 
+    // The render and hit-test paths read status every frame. Refresh these
+    // permissions at startup and in the existing watchdog instead.
+    private var inputMonitoringAllowed = false
+    private var keyboardMonitoringAllowed = false
+
     var status: InputEngineStatus {
-        guard hasKeyboardGlobalPermission else { return .needsPermission }
+        guard keyboardMonitoringAllowed else { return .needsPermission }
         if isHIDActive && isTapActive { return .fullHardware }
         if isHIDActive { return .hidOnly }
         if isTapActive { return .eventTapOnly }
         return .needsRestart
     }
 
-    var hasInputMonitoringPermission: Bool {
-        CGPreflightListenEventAccess() || (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted)
-    }
-
-    var hasAccessibilityPermission: Bool {
-        AXIsProcessTrusted()
-    }
-
-    var hasKeyboardGlobalPermission: Bool {
-        hasInputMonitoringPermission || hasAccessibilityPermission
+    private func refreshPermissions() {
+        inputMonitoringAllowed = CGPreflightListenEventAccess()
+            || IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
+        keyboardMonitoringAllowed = inputMonitoringAllowed || AXIsProcessTrusted()
     }
 
     var currentKPM: Int {
@@ -112,6 +111,7 @@ final class InputEngine {
 
     func start() {
         startLocalFallbackMonitor()
+        refreshPermissions()
         tryStartHID()
         tryStartEventTap()
         notifyStatus()
@@ -134,21 +134,20 @@ final class InputEngine {
         let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
             guard let self else { return }
             let prevStatus = self.status
-            let inputAllowed = self.hasInputMonitoringPermission
-            let keyboardAllowed = inputAllowed || self.hasAccessibilityPermission
-            if !inputAllowed && self.isHIDActive {
+            self.refreshPermissions()
+            if !self.inputMonitoringAllowed && self.isHIDActive {
                 self.stopHID()
             }
-            if !keyboardAllowed && self.isTapActive {
+            if !self.keyboardMonitoringAllowed && self.isTapActive {
                 self.stopEventTap()
             }
             if let tap = self.eventTap, !CFMachPortIsValid(tap) {
                 self.stopEventTap()
             }
-            if !self.isHIDActive && inputAllowed {
+            if !self.isHIDActive && self.inputMonitoringAllowed {
                 self.tryStartHID()
             }
-            if !self.isTapActive && keyboardAllowed {
+            if !self.isTapActive && self.keyboardMonitoringAllowed {
                 self.tryStartEventTap()
             } else if self.isTapActive, let tap = self.eventTap, !CGEvent.tapIsEnabled(tap: tap) {
                 CGEvent.tapEnable(tap: tap, enable: true)
@@ -294,7 +293,7 @@ final class InputEngine {
 
     private func tryStartHID() {
         guard !isHIDActive else { return }
-        guard hasInputMonitoringPermission else { return }
+        guard inputMonitoringAllowed else { return }
 
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
 
@@ -385,7 +384,7 @@ final class InputEngine {
         guard !isTapActive else { return }
         // Only activate keyboard EventTap when macOS actually granted Input Monitoring or Accessibility;
         // otherwise listenOnly tap silently drops keyboard events while returning non-nil!
-        guard hasKeyboardGlobalPermission else { return }
+        guard keyboardMonitoringAllowed else { return }
 
         var mask: CGEventMask = 0
         let types: [CGEventType] = [
@@ -456,8 +455,15 @@ final class InputEngine {
             // Ignore OS auto-repeat events so holding W in a game doesn't spam floating keycaps!
             let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
             let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-            if let key = PhysicalKey.fromCGKeyCode(keyCode) {
-                if !isRepeat {
+            if let key = PhysicalKey.fromCGKeyCode(keyCode), !isRepeat {
+                // On macOS (especially 13.x Chinese IME / auto-pairing editors), typing `(` or `（`
+                // injects synthetic CGEvent keyDowns (e.g. `)`, `9`, `0`, Left Arrow) with NO keyUp.
+                // When kernel HID is active and the key isn't physically down, treat it as a brief tap
+                // instead of holding it in tapPressedKeys so the right paw never gets glued to the keyboard!
+                if isHIDActive && !hidPressedKeys.contains(key) && !isKeyPhysicallyDown(key) {
+                    setKeyState(key, isDown: true, fromHID: false)
+                    setKeyState(key, isDown: false, fromHID: false)
+                } else {
                     setKeyState(key, isDown: true, fromHID: false)
                 }
             }
@@ -483,6 +489,23 @@ final class InputEngine {
                     setKeyState(key, isDown: isDown, fromHID: false)
                 }
             }
+            // If all Shift/Control/Option/Command flags cleared, ensure neither side lingers in tapPressedKeys.
+            if !flags.contains(.maskShift) {
+                if tapPressedKeys.contains(.leftShift) { setKeyState(.leftShift, isDown: false, fromHID: false) }
+                if tapPressedKeys.contains(.rightShift) { setKeyState(.rightShift, isDown: false, fromHID: false) }
+            }
+            if !flags.contains(.maskControl) {
+                if tapPressedKeys.contains(.leftControl) { setKeyState(.leftControl, isDown: false, fromHID: false) }
+                if tapPressedKeys.contains(.rightControl) { setKeyState(.rightControl, isDown: false, fromHID: false) }
+            }
+            if !flags.contains(.maskAlternate) {
+                if tapPressedKeys.contains(.leftOption) { setKeyState(.leftOption, isDown: false, fromHID: false) }
+                if tapPressedKeys.contains(.rightOption) { setKeyState(.rightOption, isDown: false, fromHID: false) }
+            }
+            if !flags.contains(.maskCommand) {
+                if tapPressedKeys.contains(.leftCommand) { setKeyState(.leftCommand, isDown: false, fromHID: false) }
+                if tapPressedKeys.contains(.rightCommand) { setKeyState(.rightCommand, isDown: false, fromHID: false) }
+            }
             lastModifierFlags = flags
         case .leftMouseDown:
             updateMouseButton(0, isDown: true)
@@ -504,11 +527,32 @@ final class InputEngine {
     }
 
     private func isModifierKeyDown(key: PhysicalKey, flags: CGEventFlags) -> Bool {
+        let raw = flags.rawValue
         switch key {
-        case .leftShift, .rightShift: return flags.contains(.maskShift)
-        case .leftControl, .rightControl: return flags.contains(.maskControl)
-        case .leftOption, .rightOption: return flags.contains(.maskAlternate)
-        case .leftCommand, .rightCommand: return flags.contains(.maskCommand)
+        case .leftShift:
+            if !flags.contains(.maskShift) { return false }
+            return (raw & 0x0006) != 0 ? (raw & 0x0002) != 0 : true
+        case .rightShift:
+            if !flags.contains(.maskShift) { return false }
+            return (raw & 0x0006) != 0 ? (raw & 0x0004) != 0 : true
+        case .leftControl:
+            if !flags.contains(.maskControl) { return false }
+            return (raw & 0x2001) != 0 ? (raw & 0x0001) != 0 : true
+        case .rightControl:
+            if !flags.contains(.maskControl) { return false }
+            return (raw & 0x2001) != 0 ? (raw & 0x2000) != 0 : true
+        case .leftOption:
+            if !flags.contains(.maskAlternate) { return false }
+            return (raw & 0x0060) != 0 ? (raw & 0x0020) != 0 : true
+        case .rightOption:
+            if !flags.contains(.maskAlternate) { return false }
+            return (raw & 0x0060) != 0 ? (raw & 0x0040) != 0 : true
+        case .leftCommand:
+            if !flags.contains(.maskCommand) { return false }
+            return (raw & 0x0018) != 0 ? (raw & 0x0008) != 0 : true
+        case .rightCommand:
+            if !flags.contains(.maskCommand) { return false }
+            return (raw & 0x0018) != 0 ? (raw & 0x0010) != 0 : true
         case .capsLock: return flags.contains(.maskAlphaShift)
         case .fn: return flags.contains(.maskSecondaryFn)
         default: return false

@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <b>Ultra-lightweight native desktop pet · Hardware-level full-state capture for typing &amp; gaming · 2.5D spherical head tracking · Hunting boba eyes · 4 switchable skins</b><br/>
+  <b>Ultra-lightweight native desktop pet · Hardware-level full-state capture for typing &amp; gaming · 2.5D spherical head tracking · Hunting boba eyes · Switchable cat skins</b><br/>
   Native macOS (Swift + CoreGraphics + IOHIDManager) · Windows (C++17 + GDI+ + Raw Input) · Linux / UOS (C++17 + GTK3/Cairo + XInput2/evdev)
 </p>
 
@@ -34,12 +34,12 @@
   - Both easter eggs and the marquee have their own checkable on/off items in the right-click menu (persisted via Windows Registry / macOS UserDefaults / Linux config.ini).
   - **Head / Back Petting**: Gently stroke the cat's head with your cursor to trigger cozy closed eyes `— —` and shimmer particles; leave it idle and it falls asleep with floating `z`s.
   - **Smart Click-Through and Launch at Login**. Transparent areas pass clicks through automatically. You can enable **Full Click-Through (Gaming Anti-Misclick)** and **Launch at Login** on Windows, macOS, and Linux.
-- **🎨 4 Skins & Custom Color Combinations**
-  - **Cat Skins**: Classic Black Cat (neon yellow-green eyes) / Siamese Cat (warm oat cream + 2.5D caramel mask + chocolate socks + sapphire blue eyes) / American Shorthair (silver tabby & white) / Orange & White Cat (orange crown + white chest & mittens)
+- **🎨 Cat Skins & Custom Color Combinations**
+  - **Cat Skins**: Classic Black Cat (neon yellow-green eyes) / Siamese Cat (warm oat cream + 2.5D caramel mask + chocolate socks + sapphire blue eyes) / American Shorthair (silver tabby & white) / Orange & White Cat (orange crown + white chest & mittens) / Doraemon (macOS and Windows) / Dazed Cat (Windows) / Brown Mackerel Tabby (Windows)
   - **Keyboard Themes**: Classic Warm Cream / Midnight Geek Black / Retro Cream Gray (toggle key labels, key bubbles, and mouse click bubbles)
-  - **Eye Colors & Scaling**: 6 eye colors, 5 size levels, plus daily keystroke counter and live KPM stats.
+  - **Eye Colors & Scaling**: 6 eye colors (plus Olive Gold on Windows), 5 size levels, plus daily keystroke counter and live KPM stats.
 
-### 6-State Preview of All 4 Skins
+### 6-State Previews
 
 | Classic Black Cat | Siamese Cat |
 | :---: | :---: |
@@ -50,6 +50,10 @@
 | <img src="assets/preview_shorthair.jpg" width="420" alt="American Shorthair preview"/> | <img src="assets/preview_orangeWhite.jpg" width="420" alt="Orange & White Cat preview"/> |
 
 The 6-state previews are natively rendered by the app: Idle, Top-Left Look, Bottom-Right Look, Hunting, Keyboard/Mouse + 3rd Paw, and Petting Closed Eyes.
+
+### Brown Mackerel Tabby (Windows)
+
+<img src="assets/preview_tabby_windows.png" width="520" alt="Classic Black and Brown Mackerel Tabby sitting and typing"/>
 
 ---
 

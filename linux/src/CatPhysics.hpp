@@ -41,6 +41,8 @@ struct CatSettings {
     bool tailEasterEgg = true;
     bool keyboardMarquee = true;
     int obsCaptureMode = 0; // 0 = off, 1 = OBS transparent window capture, 2 = OBS green screen (#00FF00)
+    bool obsHideDesktop = false;
+    bool autoHideFullscreen = false;
     bool flipHorizontal = false;
     bool isEnglish = false;
     bool isEditMode = false; // runtime-only interactive resize & flip box
@@ -85,6 +87,8 @@ struct CatSettings {
                 else if (k == "tailEasterEgg") tailEasterEgg = (std::stoi(v) != 0);
                 else if (k == "keyboardMarquee") keyboardMarquee = (std::stoi(v) != 0);
                 else if (k == "obsCaptureMode") obsCaptureMode = std::clamp(std::stoi(v), 0, 2);
+                else if (k == "obsHideDesktop") obsHideDesktop = (std::stoi(v) != 0);
+                else if (k == "autoHideFullscreen") autoHideFullscreen = (std::stoi(v) != 0);
                 else if (k == "flipHorizontal") flipHorizontal = (std::stoi(v) != 0);
                 else if (k == "isEnglish") isEnglish = (std::stoi(v) != 0);
                 else if (k == "petInteraction") petInteraction = (std::stoi(v) != 0);
@@ -115,6 +119,8 @@ struct CatSettings {
           << "tailEasterEgg=" << (tailEasterEgg ? 1 : 0) << "\n"
           << "keyboardMarquee=" << (keyboardMarquee ? 1 : 0) << "\n"
           << "obsCaptureMode=" << obsCaptureMode << "\n"
+          << "obsHideDesktop=" << (obsHideDesktop ? 1 : 0) << "\n"
+          << "autoHideFullscreen=" << (autoHideFullscreen ? 1 : 0) << "\n"
           << "flipHorizontal=" << (flipHorizontal ? 1 : 0) << "\n"
           << "isEnglish=" << (isEnglish ? 1 : 0) << "\n"
           << "petInteraction=" << (petInteraction ? 1 : 0) << "\n"
@@ -209,6 +215,16 @@ public:
     Spring2D eyeGaze{{0.0f, 0.0f}};
     Spring1D pupilScale{1.0f};
     Spring1D huntIntensity{0.0f};
+    Spring1D scruffDrag{0.0f};
+    Spring1D scruffSwing{0.0f};
+    Spring1D lieIntensity{0.0f};
+    Spring1D angerIntensity{0.0f};
+    Spring1D dizzyIntensity{0.0f};
+    float dizzyPhase = 0.0f;
+    bool isScruffDragging_ = false;
+    float scruffDragDx_ = 0.0f;
+    float fastMouseDuration_ = 0.0f;
+    float dizzyTimer_ = 0.0f;
     Spring2D mouseOffset{{0.0f, 0.0f}};
     Spring1D mousePressLeft{0.0f};
     Spring1D mousePressRight{0.0f};
@@ -294,6 +310,19 @@ public:
         } else {
             if (button == 0) mousePressLeft.target = 0.0f;
             else mousePressRight.target = 0.0f;
+        }
+    }
+
+    void setDragging(bool dragging, float dragDx = 0.0f) {
+        isScruffDragging_ = dragging;
+        if (dragging) {
+            scruffDragDx_ = dragDx;
+            sleepiness = 0.0f;
+            dizzyTimer_ = 0.0f;
+            fastMouseDuration_ = 0.0f;
+        } else {
+            scruffDragDx_ = 0.0f;
+            bodySquash.velocity -= 1.8f;
         }
     }
 
@@ -447,8 +476,9 @@ public:
         }
 
         // Fast Mouse Movement -> Hunting Mode (big round boba pupils + low crouch!)
+        // Sustained > 10s of rapid mouse shaking -> Dizzy spiral eyes & slump beside keyboard!
         float mouseSpeed = std::hypot(engine.mouseVelocity.x, engine.mouseVelocity.y);
-        if (mouseSpeed > 1500.0f && petHeadIntensity < 0.25f && petBodyIntensity < 0.25f) {
+        if (!isScruffDragging_ && dizzyTimer_ <= 0.0f && mouseSpeed > 1500.0f && petHeadIntensity < 0.25f && petBodyIntensity < 0.25f) {
             float boost = std::min(1.0f, (mouseSpeed - 1500.0f) / 1800.0f);
             huntIntensity.target = std::min(1.0f, huntIntensity.target + (0.40f + boost * 1.25f) * dt);
             sleepiness = 0.0f;
@@ -457,6 +487,45 @@ public:
         }
         huntIntensity.step(dt, 85.0f, 16.0f);
         float hunt = std::clamp(huntIntensity.value, 0.0f, 1.0f);
+
+        if (!isScruffDragging_ && dizzyTimer_ <= 0.0f && hunt > 0.42f) {
+            fastMouseDuration_ += dt;
+            if (fastMouseDuration_ >= 10.0f) {
+                dizzyTimer_ = 6.0f;
+                fastMouseDuration_ = 0.0f;
+                huntIntensity.target = 0.0f;
+                sleepiness = 0.0f;
+            }
+        } else if (dizzyTimer_ <= 0.0f) {
+            fastMouseDuration_ = std::max(0.0f, fastMouseDuration_ - dt * 1.5f);
+        }
+        if (dizzyTimer_ > 0.0f) {
+            dizzyTimer_ = std::max(0.0f, dizzyTimer_ - dt);
+            dizzyIntensity.target = 1.0f;
+            dizzyPhase += dt * 7.5f;
+        } else {
+            dizzyIntensity.target = 0.0f;
+        }
+        dizzyIntensity.step(dt, 75.0f, 14.0f);
+        float dizzy = std::clamp(dizzyIntensity.value, 0.0f, 1.0f);
+
+        scruffDrag.target = isScruffDragging_ ? 1.0f : 0.0f;
+        scruffSwing.target = isScruffDragging_ ? std::clamp(-scruffDragDx_ * 0.018f, -0.34f, 0.34f) : 0.0f;
+        scruffDragDx_ *= 0.82f;
+        scruffDrag.step(dt, 170.0f, 16.0f);
+        scruffSwing.step(dt, 110.0f, 10.0f);
+        float scruff = std::clamp(scruffDrag.value, 0.0f, 1.0f);
+
+        lieIntensity.target = (!isScruffDragging_ && dizzyTimer_ <= 0.0f && sleepiness > 0.65f)
+            ? std::min(1.0f, (sleepiness - 0.65f) / 0.30f) : 0.0f;
+        lieIntensity.step(dt, 55.0f, 14.0f);
+        float lie = std::clamp(lieIntensity.value, 0.0f, 1.0f);
+
+        float kpmVal = (float)engine.currentKPM();
+        angerIntensity.target = (!isScruffDragging_ && dizzyTimer_ <= 0.0f && kpmVal >= 240.0f)
+            ? std::min(1.0f, (kpmVal - 240.0f) / 140.0f) : 0.0f;
+        angerIntensity.step(dt, 70.0f, 14.0f);
+        float anger = std::clamp(angerIntensity.value, 0.0f, 1.0f);
 
         constexpr double tapHoldWindow = 0.14;
         bool mouseRecent = (now - engine.lastMouseMoveTime < 2.2) || engine.leftMouseDown || engine.rightMouseDown;
@@ -517,34 +586,62 @@ public:
 
         Pt liveMouse = { MouseBaseCenter.x + mouseOffset.point().x, MouseBaseCenter.y + mouseOffset.point().y };
 
-        if (leftKey != PhysicalKey::None) {
-            leftPaw.setTarget(KeyboardLayout::canvasPointForKey(leftKey));
-            leftPawTyping = true;
-            leftPawOnMouse = false;
-        } else if (mouseRecent && sleepiness < 0.3f) {
-            leftPaw.setTarget({ liveMouse.x + 2.0f, liveMouse.y - 3.0f });
+        if (scruff > 0.25f) {
+            float sway = scruffSwing.value * 28.0f;
+            float kick = std::sin(time * 9.0f) * 3.5f * scruff;
+            leftPaw.setTarget({ SeatAnchor.x - 16.0f + sway, 198.0f + kick });
+            rightPaw.setTarget({ SeatAnchor.x + 16.0f + sway, 200.0f - kick });
+            hindFoot.setTarget({ SeatAnchor.x + 12.0f + sway * 1.2f, 224.0f });
+            hindFootActive.target = 0.0f;
             leftPawTyping = false;
-            leftPawOnMouse = true;
-        } else {
-            leftPaw.setTarget(LeftPawRest);
-            leftPawTyping = false;
-            leftPawOnMouse = false;
-        }
-
-        if (rightKey != PhysicalKey::None) {
-            rightPaw.setTarget(KeyboardLayout::canvasPointForKey(rightKey));
-            rightPawTyping = true;
-        } else {
-            rightPaw.setTarget(RightPawRest);
             rightPawTyping = false;
-        }
-
-        if (footKey != PhysicalKey::None) {
-            hindFoot.setTarget(KeyboardLayout::canvasPointForKey(footKey));
-            hindFootActive.target = 1.0f;
-        } else {
+            leftPawOnMouse = false;
+        } else if (dizzy > 0.35f) {
+            leftPaw.setTarget({ SeatAnchor.x + 26.0f, 226.0f });
+            rightPaw.setTarget({ SeatAnchor.x + 62.0f, 232.0f });
             hindFoot.setTarget(HindFootRest);
             hindFootActive.target = 0.0f;
+            leftPawTyping = false;
+            rightPawTyping = false;
+            leftPawOnMouse = false;
+        } else if (lie > 0.45f) {
+            leftPaw.setTarget({ SeatAnchor.x - 32.0f, 230.0f });
+            rightPaw.setTarget({ SeatAnchor.x + 28.0f, 230.0f });
+            hindFoot.setTarget(HindFootRest);
+            hindFootActive.target = 0.0f;
+            leftPawTyping = false;
+            rightPawTyping = false;
+            leftPawOnMouse = false;
+        } else {
+            if (leftKey != PhysicalKey::None) {
+                leftPaw.setTarget(KeyboardLayout::canvasPointForKey(leftKey));
+                leftPawTyping = true;
+                leftPawOnMouse = false;
+            } else if (mouseRecent && sleepiness < 0.3f) {
+                leftPaw.setTarget({ liveMouse.x + 2.0f, liveMouse.y - 3.0f });
+                leftPawTyping = false;
+                leftPawOnMouse = true;
+            } else {
+                leftPaw.setTarget(LeftPawRest);
+                leftPawTyping = false;
+                leftPawOnMouse = false;
+            }
+
+            if (rightKey != PhysicalKey::None) {
+                rightPaw.setTarget(KeyboardLayout::canvasPointForKey(rightKey));
+                rightPawTyping = true;
+            } else {
+                rightPaw.setTarget(RightPawRest);
+                rightPawTyping = false;
+            }
+
+            if (footKey != PhysicalKey::None) {
+                hindFoot.setTarget(KeyboardLayout::canvasPointForKey(footKey));
+                hindFootActive.target = 1.0f;
+            } else {
+                hindFoot.setTarget(HindFootRest);
+                hindFootActive.target = 0.0f;
+            }
         }
 
         // Count held physical keys, never key-repeat events or mouse buttons.
@@ -596,11 +693,13 @@ public:
             targetShiftX = (avgX - 184.0f) * 0.14f;
             targetBodyTilt = (avgX - 184.0f) * 0.0011f;
         }
-        bodyShiftX.target = std::clamp(targetShiftX, -16.0f, 16.0f);
-        bodyTilt.target = std::clamp(targetBodyTilt, -0.12f, 0.12f);
-        bodySquash.target = 1.0f - hunt * 0.11f;
-        headOffsetY.target = (leftPawTyping || rightPawTyping) ? 3.5f : (sleepiness * 5.0f + hunt * 10.5f);
-        earFold.target = std::max(petHeadIntensity * 0.7f, petBodyIntensity * 0.45f) + sleepiness * 0.25f - hunt * 0.18f;
+        bodyShiftX.target = std::clamp(targetShiftX, -16.0f, 16.0f) + dizzy * 48.0f;
+        bodyTilt.target = std::clamp(targetBodyTilt, -0.12f, 0.12f) + scruffSwing.value * scruff + dizzy * 0.46f;
+        bodySquash.target = 1.0f - hunt * 0.11f + scruff * 0.16f - lie * 0.22f - dizzy * 0.14f;
+        headOffsetY.target = ((leftPawTyping || rightPawTyping) ? 3.5f : (sleepiness * 5.0f + hunt * 10.5f))
+            - scruff * 10.0f + lie * 34.0f + dizzy * 22.0f;
+        earFold.target = std::max(petHeadIntensity * 0.7f, petBodyIntensity * 0.45f) + sleepiness * 0.25f - hunt * 0.18f
+            + scruff * 0.35f + anger * 0.45f + dizzy * 0.35f;
         earTwitch.target = 0.0f;
 
         bodyShiftX.step(dt, 140.0f, 18.0f);
@@ -677,7 +776,7 @@ public:
         float kpmBoost = std::min(2.4f, (float)engine.currentKPM() / 160.0f);
         float petBoost = std::max(petHeadIntensity, petBodyIntensity) * 1.4f;
         float agilityBoost = std::clamp(tailAgility.value, 0.0f, 1.0f) * 3.2f;
-        tailPhase += dt * (1.85f + kpmBoost + petBoost + hunt * 2.8f + agilityBoost - sleepiness * 1.1f);
+        tailPhase += dt * (1.85f + kpmBoost + petBoost + hunt * 2.8f + anger * 3.5f + agilityBoost - sleepiness * 1.1f);
 
         std::unordered_set<PhysicalKey> visualActive;
         for (PhysicalKey k : activeKeys) visualActive.insert(visualKeyOf(k));

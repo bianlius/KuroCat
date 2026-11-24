@@ -1,6 +1,74 @@
 import Foundation
 import AppKit
 
+private struct RenderedPose {
+    struct Appearance: Equatable {
+        let coat: CatCoatTheme
+        let keyboard: KeyboardTheme
+        let eyes: EyeColorTheme
+        let showsLegends: Bool
+        let size: CGSize
+        let flipped: Bool
+        let captureMode: Int
+        let showEditControls: Bool
+        let englishLabels: Bool
+    }
+
+    let appearance: Appearance
+    let hasEffects: Bool
+    let head: CGPoint
+    let tail: CGPoint
+    let tailBend: CGPoint
+    let leftPaw: CGPoint
+    let rightPaw: CGPoint
+    let eyeClosure: CGFloat
+    let headTurn: CGPoint
+    let headTilt: CGFloat
+    let eyeGaze: CGPoint
+    let mouseOffset: CGPoint
+    let pawOnMouse: Bool
+
+    init(physics: CatPhysics, settings: CatSettings, size: CGSize) {
+        let coat = settings.coatTheme
+        appearance = Appearance(coat: coat, keyboard: settings.keyboardTheme, eyes: settings.eyeTheme,
+                                showsLegends: settings.showKeyLegends, size: size, flipped: settings.flipHorizontal,
+                                captureMode: settings.obsCaptureMode, showEditControls: settings.isEditMode,
+                                englishLabels: settings.isEnglish)
+        hasEffects = settings.keyboardMarquee || !physics.sparkles.isEmpty
+            || !physics.floatingKeycaps.isEmpty || !physics.keyGlow.isEmpty
+            || physics.angerIntensity.value > 0.02 || physics.dizzyIntensity.value > 0.02
+            || physics.scruffDrag.value > 0.02 || physics.lieIntensity.value > 0.02
+        head = CatRenderer.headPosition(physics, coat: coat)
+        let tailCurve = CatRenderer.tailCurve(physics)
+        tail = tailCurve.tip
+        tailBend = tailCurve.control2
+        leftPaw = physics.leftPaw.point
+        rightPaw = physics.rightPaw.point
+        eyeClosure = physics.effectiveEyeClosure
+        headTurn = CGPoint(x: physics.headYaw.value, y: physics.headPitch.value)
+        headTilt = physics.headTilt.value
+        eyeGaze = physics.eyeGaze.point
+        mouseOffset = physics.mouseOffset.point
+        pawOnMouse = physics.leftPawOnMouse
+    }
+
+    func visiblyDiffers(from previous: RenderedPose) -> Bool {
+        if appearance != previous.appearance || hasEffects || previous.hasEffects
+            || pawOnMouse != previous.pawOnMouse { return true }
+        func distance(_ a: CGPoint, _ b: CGPoint) -> CGFloat { hypot(a.x - b.x, a.y - b.y) }
+        // Estimate how far visible features moved in canvas coordinates, then convert to screen points.
+        let movement = max(distance(head, previous.head), distance(tail, previous.tail),
+                           distance(tailBend, previous.tailBend),
+                           distance(leftPaw, previous.leftPaw), distance(rightPaw, previous.rightPaw),
+                           abs(eyeClosure - previous.eyeClosure) * 40, distance(headTurn, previous.headTurn) * 24,
+                           abs(headTilt - previous.headTilt) * 52, distance(eyeGaze, previous.eyeGaze) * 10,
+                           distance(mouseOffset, previous.mouseOffset))
+        let scale = max(appearance.size.width / CatPhysics.canvasSize.width,
+                        appearance.size.height / CatPhysics.canvasSize.height)
+        return movement * scale >= 0.65
+    }
+}
+
 final class CatCanvasView: NSView {
     let physics = CatPhysics()
     var onRequestPermission: (() -> Void)?
@@ -14,6 +82,9 @@ final class CatCanvasView: NSView {
     private var dragStartScreenPt: CGPoint = .zero
     private var dragStartWindowOrigin: CGPoint = .zero
     private var isShowingOpenHand = false
+    private var lastDrawnPose: RenderedPose?
+
+    var isDraggingOrResizing: Bool { isDragging || activeResizeCorner >= 0 }
 
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
@@ -31,8 +102,14 @@ final class CatCanvasView: NSView {
         let status = InputEngine.shared.status
         CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: status.needsAttention,
                          permissionPillText: status.permissionPillText)
-
+        lastDrawnPose = RenderedPose(physics: physics, settings: CatSettings.shared, size: bounds.size)
         ctx.restoreGState()
+    }
+
+    func poseNeedsDisplay() -> Bool {
+        guard let previous = lastDrawnPose else { return true }
+        let current = RenderedPose(physics: physics, settings: CatSettings.shared, size: bounds.size)
+        return current.visiblyDiffers(from: previous)
     }
 
     func canvasPoint(fromScreenPoint screenPt: CGPoint) -> CGPoint? {
@@ -49,9 +126,7 @@ final class CatCanvasView: NSView {
     func updateHoverAndClickThrough() {
         guard let win = window else { return }
         let screenPt = NSEvent.mouseLocation
-        let showPill = InputEngine.shared.status.needsAttention
-
-        if isDragging || activeResizeCorner >= 0 {
+        if isDraggingOrResizing {
             win.ignoresMouseEvents = false
             return
         }
@@ -89,6 +164,7 @@ final class CatCanvasView: NSView {
         let catPt = CatSettings.shared.flipHorizontal
             ? CGPoint(x: CatPhysics.canvasSize.width - pt.x, y: pt.y)
             : pt
+        let showPill = InputEngine.shared.status.needsAttention
         let zone = CatRenderer.hitTest(point: catPt, physics: physics, showPermissionPill: showPill)
         physics.updateTailHover(canvasPoint: catPt)
 
@@ -190,6 +266,7 @@ final class CatCanvasView: NSView {
         isDragging = true
         dragStartScreenPt = screenPt
         dragStartWindowOrigin = win.frame.origin
+        physics.setDragging(true, dragDx: 0)
         NSCursor.closedHand.set()
     }
 
@@ -215,10 +292,13 @@ final class CatCanvasView: NSView {
             return
         }
         guard isDragging else { return }
+        let prevX = win.frame.origin.x
         let newOrigin = CGPoint(
             x: dragStartWindowOrigin.x + (currentScreenPt.x - dragStartScreenPt.x),
             y: dragStartWindowOrigin.y + (currentScreenPt.y - dragStartScreenPt.y)
         )
+        let stepDx = newOrigin.x - prevX
+        physics.setDragging(true, dragDx: CatSettings.shared.flipHorizontal ? -stepDx : stepDx)
         win.setFrameOrigin(newOrigin)
     }
 
@@ -232,6 +312,7 @@ final class CatCanvasView: NSView {
         }
         guard isDragging else { return }
         isDragging = false
+        physics.setDragging(false)
         NSCursor.openHand.set()
         // Save position
         UserDefaults.standard.set(Double(win.frame.origin.x), forKey: "KuroCat.PosX")
@@ -280,6 +361,7 @@ final class OverlayWindow: NSPanel {
 
     func applyOBSMode() {
         let mode = CatSettings.shared.obsCaptureMode
+        let hideDesktop = (mode > 0 && CatSettings.shared.obsHideDesktop)
         title = "KuroCat"
         sharingType = .readOnly
         if mode == 2 {
@@ -288,6 +370,14 @@ final class OverlayWindow: NSPanel {
         } else {
             isOpaque = false
             backgroundColor = .clear
+        }
+        if hideDesktop {
+            // Tuck behind desktop/all apps while staying rendered so OBS Window Capture stays live!
+            level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) - 1)
+            collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+            ignoresMouseEvents = true
+        } else {
+            applyWindowLevelAndBehavior()
         }
         catView.needsDisplay = true
     }
