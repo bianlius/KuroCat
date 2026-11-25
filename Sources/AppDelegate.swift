@@ -346,6 +346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case .shorthair: coatTitle = "Silver Tabby Shorthair"
                 case .orangeWhite: coatTitle = "Orange & White Cat"
                 case .doraemon: coatTitle = "Doraemon"
+                case .pikachu: coatTitle = "Pikachu"
                 }
             } else {
                 coatTitle = coat.rawValue
@@ -633,6 +634,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             CatSettings.shared.eyeTheme = .warmAmber
         case .doraemon:
             CatSettings.shared.eyeTheme = .iceCyan
+        case .pikachu:
+            CatSettings.shared.eyeTheme = .warmAmber
         }
     }
 

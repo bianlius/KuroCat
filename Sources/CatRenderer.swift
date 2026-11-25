@@ -74,6 +74,10 @@ enum CatRenderer {
         }
 
         let keyboardRect = CGRect(x: 58, y: 232, width: 236, height: 64)
+        if CatSettings.shared.coatTheme == .pikachu {
+            if let zone = PikachuRenderer.hitTest(point: p, physics: physics) { return zone }
+            return keyboardRect.contains(p) ? .body : .none
+        }
         if CatSettings.shared.coatTheme == .doraemon, DoraemonRenderer.bundled != nil {
             if let zone = DoraemonRenderer.hitTest(point: p, physics: physics) { return zone }
             return keyboardRect.contains(p) ? .body : .none
@@ -134,7 +138,10 @@ enum CatRenderer {
                                         eyeTheme: settings.eyeTheme, showLegends: settings.showKeyLegends,
                                         flipped: flipped, marquee: settings.keyboardMarquee)
 
-        if coat == .doraemon, let renderer = DoraemonRenderer.bundled {
+        if coat == .pikachu {
+            PikachuRenderer.draw(in: ctx, physics: physics, eyeColor: settings.eyeTheme.primaryColor.cgColor,
+                                 keyboardDeck: keyboardDeck)
+        } else if coat == .doraemon, let renderer = DoraemonRenderer.bundled {
             renderer.draw(in: ctx, physics: physics, eyeColor: settings.eyeTheme.primaryColor.cgColor, keyboardDeck: keyboardDeck)
         } else {
             drawCat(in: ctx, physics: physics, coat: coat, eyeTheme: settings.eyeTheme)
@@ -349,9 +356,13 @@ enum CatRenderer {
             ctx.restoreGState()
         }
 
+        let transform = ctx.userSpaceToDeviceSpaceTransform
+        let pixelsPerPoint = min(hypot(transform.a, transform.b), hypot(transform.c, transform.d))
+
+        // Keep the separator legible when the view is smaller than its canvas.
         // Button split seam pointing forward (bottom, away from cat!)
         ctx.setStrokeColor(borderColor.withAlphaComponent(0.32).cgColor)
-        ctx.setLineWidth(1.05)
+        ctx.setLineWidth(max(1.05, 1.25 / pixelsPerPoint))
         ctx.move(to: CGPoint(x: 0, y: 16))
         ctx.addLine(to: CGPoint(x: 0, y: 1.5))
         ctx.strokePath()
@@ -365,7 +376,7 @@ enum CatRenderer {
 
         // Outer crisp outline
         ctx.setStrokeColor(borderColor.cgColor)
-        ctx.setLineWidth(1.7)
+        ctx.setLineWidth(max(1.7, 1.65 / pixelsPerPoint))
         ctx.strokeEllipse(in: bodyRect)
 
         ctx.restoreGState()
@@ -376,29 +387,31 @@ enum CatRenderer {
     private struct KeyboardBitmap {
         let image: CGImage
         let bounds: CGRect
+        private let pixelBounds: CGRect
+        private let pixelToCanvas: CGAffineTransform
 
-        init?(bounds: CGRect, scale: CGSize, draw: (CGContext) -> Void) {
-            let pixels = CGRect(x: bounds.minX * scale.width, y: bounds.minY * scale.height,
-                                width: bounds.width * scale.width, height: bounds.height * scale.height).integral
-            guard let ctx = CGContext(data: nil, width: Int(pixels.width), height: Int(pixels.height),
+        init?(bounds: CGRect, canvasToPixel: CGAffineTransform, draw: (CGContext) -> Void) {
+            let pixels = bounds.applying(canvasToPixel).integral
+            guard pixels.width > 0, pixels.height > 0,
+                  let ctx = CGContext(data: nil, width: Int(pixels.width), height: Int(pixels.height),
                                       bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-            ctx.translateBy(x: -pixels.minX, y: pixels.maxY)
-            ctx.scaleBy(x: scale.width, y: -scale.height)
+            ctx.translateBy(x: -pixels.minX, y: -pixels.minY)
+            ctx.concatenate(canvasToPixel)
             ctx.setAllowsAntialiasing(true)
             ctx.setShouldAntialias(true)
             draw(ctx)
             guard let image = ctx.makeImage() else { return nil }
             self.image = image
-            self.bounds = CGRect(x: pixels.minX / scale.width, y: pixels.minY / scale.height,
-                                 width: pixels.width / scale.width, height: pixels.height / scale.height)
+            self.bounds = bounds
+            self.pixelBounds = pixels
+            self.pixelToCanvas = canvasToPixel.inverted()
         }
 
         func draw(in ctx: CGContext) {
             ctx.saveGState()
-            ctx.translateBy(x: bounds.minX, y: bounds.maxY)
-            ctx.scaleBy(x: 1, y: -1)
-            ctx.draw(image, in: CGRect(origin: .zero, size: bounds.size))
+            ctx.concatenate(pixelToCanvas)
+            ctx.draw(image, in: pixelBounds)
             ctx.restoreGState()
         }
     }
@@ -407,7 +420,7 @@ enum CatRenderer {
         let theme: KeyboardTheme
         let showLegends: Bool
         let flipped: Bool
-        let scale: CGSize
+        let canvasToPixel: CGAffineTransform
     }
 
     private struct KeyboardArtwork {
@@ -442,12 +455,11 @@ enum CatRenderer {
         flipped: Bool,
         marquee: Bool
     ) -> CGPath {
-        let transform = ctx.userSpaceToDeviceSpaceTransform
-        // Round up in quarter steps so dragging a resize handle does not rebuild the cache every tick.
-        func rasterScale(_ value: CGFloat) -> CGFloat { min(4, max(1, (value * 4).rounded(.up) / 4)) }
-        let scale = CGSize(width: rasterScale(hypot(transform.a, transform.b)),
-                           height: rasterScale(hypot(transform.c, transform.d)))
-        let style = KeyboardStyle(theme: theme, showLegends: showLegends, flipped: flipped, scale: scale)
+        // Use the destination pixel grid. Whole-pixel translations can reuse the cache.
+        var canvasToPixel = ctx.userSpaceToDeviceSpaceTransform
+        canvasToPixel.tx -= canvasToPixel.tx.rounded(.down)
+        canvasToPixel.ty -= canvasToPixel.ty.rounded(.down)
+        let style = KeyboardStyle(theme: theme, showLegends: showLegends, flipped: flipped, canvasToPixel: canvasToPixel)
         let artwork: KeyboardArtwork
         if let cached = keyboardArtwork, cached.style == style {
             artwork = cached
@@ -536,7 +548,7 @@ enum CatRenderer {
         let topChassis = roundedQuadPath(tl: tl, tr: tr, br: br, bl: bl, radius: 5.0)
         let bounds = shadowPath.boundingBoxOfPath.union(lowerChassis.boundingBoxOfPath)
             .union(topChassis.boundingBoxOfPath).insetBy(dx: -2, dy: -2)
-        let chassis = KeyboardBitmap(bounds: bounds, scale: style.scale) { ctx in
+        let chassis = KeyboardBitmap(bounds: bounds, canvasToPixel: style.canvasToPixel) { ctx in
             ctx.setFillColor(NSColor(calibratedWhite: 0, alpha: 0.22).cgColor)
             ctx.addPath(shadowPath)
             ctx.fillPath()
@@ -601,7 +613,7 @@ enum CatRenderer {
                     var transform = CGAffineTransform(translationX: labelCenter.x, y: labelCenter.y).rotated(by: .pi + 0.052)
                     if style.flipped { transform = transform.scaledBy(x: -1, y: 1) }
                     legendBitmap = KeyboardBitmap(bounds: textRect.applying(transform).insetBy(dx: -2, dy: -2),
-                                                  scale: style.scale) { ctx in
+                                                  canvasToPixel: style.canvasToPixel) { ctx in
                         ctx.concatenate(transform)
                         NSGraphicsContext.saveGraphicsState()
                         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
@@ -611,7 +623,7 @@ enum CatRenderer {
                 }
             }
             let restingBounds = legendBitmap.map { keyBounds.union($0.bounds) } ?? keyBounds
-            let resting = KeyboardBitmap(bounds: restingBounds, scale: style.scale) { ctx in
+            let resting = KeyboardBitmap(bounds: restingBounds, canvasToPixel: style.canvasToPixel) { ctx in
                 drawKeycap(in: ctx, path: kPath, fill: fill.cgColor, border: border)
                 legendBitmap?.draw(in: ctx)
             }
@@ -619,7 +631,7 @@ enum CatRenderer {
                                       legend: legendBitmap, resting: resting)
         }
 
-        let idle = KeyboardBitmap(bounds: bounds, scale: style.scale) { ctx in
+        let idle = KeyboardBitmap(bounds: bounds, canvasToPixel: style.canvasToPixel) { ctx in
             chassis?.draw(in: ctx)
             for key in keys {
                 drawKeyboardKey(key, in: ctx, glow: 0, glowColor: accentColor)

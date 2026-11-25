@@ -74,10 +74,19 @@ final class CatCanvasView: NSView {
     var onRequestPermission: (() -> Void)?
     var onRightClickMenu: ((NSEvent) -> Void)?
 
+    static let windowCanvasSize = CatPhysics.canvasSize
+
+    static func canvasScale(for size: CGSize) -> CGFloat {
+        min(size.width / windowCanvasSize.width, size.height / windowCanvasSize.height)
+    }
+
+    static func windowSize(at scale: CGFloat) -> CGSize {
+        CGSize(width: windowCanvasSize.width * scale, height: windowCanvasSize.height * scale)
+    }
+
     private var lastHoverCanvasPt: CGPoint?
     private var isDragging = false
     private var activeResizeCorner: Int = -1 // -1 = none, 0=TL, 1=TR, 2=BL, 3=BR
-    private var resizeAnchorScreenPt: CGPoint = .zero
     private var resizeStartFrame: CGRect = .zero
     private var dragStartScreenPt: CGPoint = .zero
     private var dragStartWindowOrigin: CGPoint = .zero
@@ -94,10 +103,9 @@ final class CatCanvasView: NSView {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         ctx.clear(bounds)
 
-        let scaleX = bounds.width / CatPhysics.canvasSize.width
-        let scaleY = bounds.height / CatPhysics.canvasSize.height
+        let scale = Self.canvasScale(for: bounds.size)
         ctx.saveGState()
-        ctx.scaleBy(x: scaleX, y: scaleY)
+        ctx.scaleBy(x: scale, y: scale)
 
         let status = InputEngine.shared.status
         CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: status.needsAttention,
@@ -116,9 +124,9 @@ final class CatCanvasView: NSView {
         guard let win = window else { return nil }
         let frame = win.frame
         guard frame.contains(screenPt) else { return nil }
-        let localX = (screenPt.x - frame.minX) / frame.width * CatPhysics.canvasSize.width
-        // Convert bottom-up screen Y to flipped top-down canvas Y
-        let localY = (frame.maxY - screenPt.y) / frame.height * CatPhysics.canvasSize.height
+        let scale = Self.canvasScale(for: frame.size)
+        let localX = (screenPt.x - frame.minX) / scale
+        let localY = (frame.maxY - screenPt.y) / scale
         return CGPoint(x: localX, y: localY)
     }
 
@@ -234,14 +242,7 @@ final class CatCanvasView: NSView {
                 if hit >= 0 && hit <= 3 {
                     activeResizeCorner = hit
                     resizeStartFrame = win.frame
-                    // Anchor the opposite corner in screen space (AppKit Y is bottom-up)
-                    let f = win.frame
-                    switch hit {
-                    case 0: resizeAnchorScreenPt = CGPoint(x: f.maxX, y: f.minY) // dragging TL -> anchor BR
-                    case 1: resizeAnchorScreenPt = CGPoint(x: f.minX, y: f.minY) // dragging TR -> anchor BL
-                    case 2: resizeAnchorScreenPt = CGPoint(x: f.maxX, y: f.maxY) // dragging BL -> anchor TR
-                    default: resizeAnchorScreenPt = CGPoint(x: f.minX, y: f.maxY) // dragging BR -> anchor TL
-                    }
+                    dragStartScreenPt = screenPt
                     return
                 }
             }
@@ -274,21 +275,12 @@ final class CatCanvasView: NSView {
         guard let win = window else { return }
         let currentScreenPt = NSEvent.mouseLocation
         if activeResizeCorner >= 0 {
-            let dx = abs(currentScreenPt.x - resizeAnchorScreenPt.x)
-            let dy = abs(currentScreenPt.y - resizeAnchorScreenPt.y)
-            let sx = dx / CatPhysics.canvasSize.width
-            let sy = dy / CatPhysics.canvasSize.height
-            let newScale = max(0.45, min(2.50, max(sx, sy)))
-            let newW = CatPhysics.canvasSize.width * newScale
-            let newH = CatPhysics.canvasSize.height * newScale
-            let originX = (activeResizeCorner == 0 || activeResizeCorner == 2)
-                ? (resizeAnchorScreenPt.x - newW)
-                : resizeAnchorScreenPt.x
-            let originY = (activeResizeCorner == 2 || activeResizeCorner == 3)
-                ? (resizeAnchorScreenPt.y - newH)
-                : resizeAnchorScreenPt.y
-            CatSettings.shared.scale = newScale
-            win.setFrame(CGRect(x: originX, y: originY, width: newW, height: newH), display: true)
+            let delta = CGPoint(x: currentScreenPt.x - dragStartScreenPt.x,
+                                y: currentScreenPt.y - dragStartScreenPt.y)
+            let resize = Self.resizeLayout(from: resizeStartFrame, corner: activeResizeCorner, delta: delta)
+            guard resize.frame != win.frame else { return }
+            CatSettings.shared.scale = resize.scale
+            win.setFrame(resize.frame, display: true)
             return
         }
         guard isDragging else { return }
@@ -300,6 +292,25 @@ final class CatCanvasView: NSView {
         let stepDx = newOrigin.x - prevX
         physics.setDragging(true, dragDx: CatSettings.shared.flipHorizontal ? -stepDx : stepDx)
         win.setFrameOrigin(newOrigin)
+    }
+
+    private static func resizeLayout(from frame: CGRect, corner: Int, delta: CGPoint)
+        -> (frame: CGRect, scale: CGFloat) {
+        let moving = CatRenderer.editCorners[corner]
+        let fixed = CatRenderer.editCorners[3 - corner]
+        let dx = moving.x - fixed.x
+        let dy = fixed.y - moving.y
+        // Project the cursor movement onto the handle diagonal in screen coordinates.
+        let startScale = canvasScale(for: frame.size)
+        let scaleChange = (delta.x * dx + delta.y * dy) / (dx * dx + dy * dy)
+        let scale = max(0.45, min(2.50, startScale + scaleChange))
+
+        let headroom = windowCanvasSize.height - CatPhysics.canvasSize.height
+        let fixedY = headroom + fixed.y
+        let anchor = CGPoint(x: frame.minX + fixed.x * startScale, y: frame.maxY - fixedY * startScale)
+        let size = windowSize(at: scale)
+        let origin = CGPoint(x: anchor.x - fixed.x * scale, y: anchor.y + fixedY * scale - size.height)
+        return (CGRect(origin: origin, size: size), scale)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -329,10 +340,7 @@ final class OverlayWindow: NSPanel {
 
     init() {
         let scale = CatSettings.shared.scale
-        let size = CGSize(
-            width: CatPhysics.canvasSize.width * scale,
-            height: CatPhysics.canvasSize.height * scale
-        )
+        let size = CatCanvasView.windowSize(at: scale)
         let origin = OverlayWindow.initialOrigin(for: size)
 
         super.init(
@@ -395,10 +403,7 @@ final class OverlayWindow: NSPanel {
     func applyScale(_ newScale: CGFloat) {
         CatSettings.shared.scale = newScale
         let oldFrame = frame
-        let newSize = CGSize(
-            width: CatPhysics.canvasSize.width * newScale,
-            height: CatPhysics.canvasSize.height * newScale
-        )
+        let newSize = CatCanvasView.windowSize(at: newScale)
         // Anchor bottom-center so scaling feels grounded
         let newOrigin = CGPoint(
             x: oldFrame.midX - newSize.width * 0.5,

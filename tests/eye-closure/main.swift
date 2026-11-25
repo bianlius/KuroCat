@@ -21,7 +21,7 @@ func render(_ original: Bool, _ coat: CatCoatTheme, _ closure: CGFloat, _ left: 
 }
 let baseline = render(false,.classicBlack,-1,true)
 var oldFringe = 0
-let catCoats = CatCoatTheme.allCases.filter { $0 != .doraemon }
+let catCoats = CatCoatTheme.allCases.filter { $0 != .doraemon && $0 != .pikachu }
 for coat in catCoats {
     for left in [true,false] {
         for closure: CGFloat in [0,0.25,0.5,0.92,1] {

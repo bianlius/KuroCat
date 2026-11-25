@@ -93,6 +93,7 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/CatPhysics.swift"
     "$ROOT/Sources/CatRenderer.swift"
     "$ROOT/Sources/DoraemonRenderer.swift"
+    "$ROOT/Sources/PikachuRenderer.swift"
     "$ROOT/Sources/CoatPatterns.swift"
     "$ROOT/Sources/OverlayWindow.swift"
     "$ROOT/Sources/AppDelegate.swift"

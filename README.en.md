@@ -35,7 +35,7 @@
   - **Head / Back Petting**: Gently stroke the cat's head with your cursor to trigger cozy closed eyes `— —` and shimmer particles; leave it idle and it falls asleep with floating `z`s.
   - **Smart Click-Through and Launch at Login**. Transparent areas pass clicks through automatically. You can enable **Full Click-Through (Gaming Anti-Misclick)** and **Launch at Login** on Windows, macOS, and Linux.
 - **🎨 Cat Skins & Custom Color Combinations**
-  - **Cat Skins**: Classic Black Cat (neon yellow-green eyes) / Siamese Cat (warm oat cream + 2.5D caramel mask + chocolate socks + sapphire blue eyes) / American Shorthair (silver tabby & white) / Orange & White Cat (orange crown + white chest & mittens) / Doraemon (macOS and Windows) / Dazed Cat (Windows) / Brown Mackerel Tabby (Windows)
+  - **Cat Skins**: Classic Black Cat (neon yellow-green eyes) / Siamese Cat (warm oat cream + 2.5D caramel mask + chocolate socks + sapphire blue eyes) / American Shorthair (silver tabby & white) / Orange & White Cat (orange crown + white chest & mittens) / Doraemon (macOS and Windows) / Pikachu (macOS) / Dazed Cat (Windows) / Brown Mackerel Tabby (Windows)
   - **Keyboard Themes**: Classic Warm Cream / Midnight Geek Black / Retro Cream Gray (toggle key labels, key bubbles, and mouse click bubbles)
   - **Eye Colors & Scaling**: 6 eye colors (plus Olive Gold on Windows), 5 size levels, plus daily keystroke counter and live KPM stats.
 
@@ -50,6 +50,12 @@
 | <img src="assets/preview_shorthair.jpg" width="420" alt="American Shorthair preview"/> | <img src="assets/preview_orangeWhite.jpg" width="420" alt="Orange & White Cat preview"/> |
 
 The 6-state previews are natively rendered by the app: Idle, Top-Left Look, Bottom-Right Look, Hunting, Keyboard/Mouse + 3rd Paw, and Petting Closed Eyes.
+
+### Pikachu (macOS)
+
+<img src="assets/preview_pikachu.png" width="840" alt="Pikachu: seated, looking left/right, keyboard and mouse, petting, and sleep"/>
+
+Native vector artwork based on the selected [front-facing seated reference](https://toppng.com/show_download/96833/pikachu-cara-5), with black ear tips, red cheeks, a lightning-bolt tail, and splayed feet. Supports pointer tracking, blinking, petting, keyboard/mouse arms, and tail typing. Select **Cat Skin → Pikachu** in the context menu.
 
 ### Brown Mackerel Tabby (Windows)
 

@@ -16,8 +16,9 @@ enum CatCoatTheme: String, CaseIterable {
     case shorthair = "美短（银虎斑加白）"
     case orangeWhite = "橘白猫"
     case doraemon = "哆啦A梦"
+    case pikachu = "皮卡丘"
 
-    var supportsFootEasterEgg: Bool { self != .doraemon }
+    var supportsFootEasterEgg: Bool { self != .doraemon && self != .pikachu }
 }
 
 enum EyeColorTheme: String, CaseIterable {
