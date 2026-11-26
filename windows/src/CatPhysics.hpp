@@ -17,8 +17,11 @@ enum class CatCoatTheme : int {
     OrangeWhite = 3,
     Doraemon = 4, // Preserve the skin ID saved by this fork.
     Tabby = 5,
-    Dazed = 6
+    Dazed = 6,
+    Pikachu = 7
 };
+
+inline constexpr int BuiltInCoatCount = static_cast<int>(CatCoatTheme::Pikachu) + 1;
 
 enum class CatHitZone {
     None,
@@ -79,7 +82,11 @@ struct CatSettings {
     int posX = -99999;
     int posY = -99999;
 
-    bool usesDoraemon() const { return coatTheme == CatCoatTheme::Doraemon && customSkin.empty(); }
+    bool usesBuiltInCoat(CatCoatTheme coat) const { return coatTheme == coat && customSkin.empty(); }
+
+    bool supportsFootEasterEgg() const {
+        return !usesBuiltInCoat(CatCoatTheme::Doraemon) && !usesBuiltInCoat(CatCoatTheme::Pikachu);
+    }
 
     void loadFromRegistry() {
         HKEY hKey = nullptr;
@@ -115,7 +122,7 @@ struct CatSettings {
         alwaysOnTop      = readDword(L"AlwaysOnTop", 1) != 0;
         runAsAdmin       = readDword(L"RunAsAdmin", 0) != 0;
         scale            = std::clamp((float)readDword(L"ScalePct", 100) / 100.0f, 0.45f, 2.50f);
-        coatTheme        = (CatCoatTheme)std::clamp((int)readDword(L"CoatTheme", 0), 0, static_cast<int>(CatCoatTheme::Dazed));
+        coatTheme        = (CatCoatTheme)std::clamp((int)readDword(L"CoatTheme", 0), 0, BuiltInCoatCount - 1);
         keyboardTheme    = (KeyboardTheme)std::clamp((int)readDword(L"KeyboardTheme", 0), 0, 2);
         eyeTheme         = (EyeColorTheme)std::clamp((int)readDword(L"EyeTheme", 0), 0, (int)EyeColorTheme::OliveGold);
         overrideSkinIris = readDword(L"OverrideSkinIris", 0) != 0;
@@ -951,7 +958,7 @@ public:
             rightKey = sorted.back();
         }
 
-        if (settings.footEasterEgg && !settings.usesDoraemon()) {
+        if (settings.footEasterEgg && settings.supportsFootEasterEgg()) {
             if (orderedKeys.size() >= 3) {
                 for (PhysicalKey k : orderedKeys) {
                     if (k != leftKey && k != rightKey) { footKey = k; break; }

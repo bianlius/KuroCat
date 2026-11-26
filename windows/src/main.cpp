@@ -52,7 +52,6 @@ constexpr UINT WM_WAKE_EXISTING = WM_APP + 2;
 constexpr UINT WM_REQUEST_QUIT = WM_APP + 5; // posted by a newer / elevated instance that is taking over
 constexpr UINT_PTR TIMER_RENDER = 1;
 constexpr int HOTKEY_CLICKTHROUGH_ID = 101;
-constexpr int BUILT_IN_COAT_COUNT = static_cast<int>(CatCoatTheme::Dazed) + 1;
 UINT g_msgTaskbarCreated = 0;
 
 enum MenuCmd : UINT {
@@ -102,6 +101,7 @@ enum MenuCmd : UINT {
     CMD_QUIT,
     CMD_COAT_TABBY,
     CMD_COAT_DORAEMON,
+    CMD_COAT_PIKACHU,
     CMD_EYE_OLIVE_GOLD,
     CMD_TABLET_AUTO,
     CMD_TABLET_ON,
@@ -127,6 +127,7 @@ constexpr int IDC_DRESSING_CHOOSE = 11;
 
 struct AppState {
     std::unique_ptr<DoraemonRenderer> doraemon;
+    std::unique_ptr<PikachuRenderer> pikachu;
     HWND hwnd = nullptr;
     HWND menuOwnerHwnd = nullptr; // Non-NOACTIVATE helper window so TrackPopupMenu from tray NEVER fails!
     HICON trayIcon = nullptr;
@@ -677,7 +678,11 @@ const SkinSpec& activeSkin(const AppState& app) {
 }
 
 const DoraemonRenderer* activeDoraemon(const AppState& app) {
-    return app.settings.usesDoraemon() ? app.doraemon.get() : nullptr;
+    return app.settings.usesBuiltInCoat(CatCoatTheme::Doraemon) ? app.doraemon.get() : nullptr;
+}
+
+const PikachuRenderer* activePikachu(const AppState& app) {
+    return app.settings.usesBuiltInCoat(CatCoatTheme::Pikachu) ? app.pikachu.get() : nullptr;
 }
 
 const KeyboardSkinSpec& builtInKeyboardSkin(KeyboardTheme theme) {
@@ -923,7 +928,8 @@ void paint(AppState& app, HWND hwnd, HDC hdc) {
         settings.isEditMode = false;
         settings.flipHorizontal = false;
         settings.rotationDeg = 0.0f;
-        CatRenderer::draw(g, pose, settings, activeSkin(app), activeKeyboardSkin(app), activeDoraemon(app));
+        CatRenderer::draw(g, pose, settings, activeSkin(app), activeKeyboardSkin(app),
+                          activeDoraemon(app), activePikachu(app));
         g.Restore(st);
         g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
     }
@@ -1312,21 +1318,22 @@ void rebuildCombosAndSync(AppState& app) {
     HWND coatCb = GetDlgItem(hwnd, ID_COAT_COMBO);
     if (coatCb) {
         SendMessageW(coatCb, CB_RESETCONTENT, 0, 0);
-        const wchar_t* builtins[BUILT_IN_COAT_COUNT] = {
+        const wchar_t* builtins[BuiltInCoatCount] = {
             tr(L"\u7ECF\u5178\u5C0F\u9ED1\u732B", L"Classic Black Cat"),
             tr(L"\u6316\u7164\u66B9\u7F57\u732B", L"Siamese Cat"),
             tr(L"\u7F8E\u77ED\u94F6\u864E\u6591", L"Silver Tabby Shorthair"),
             tr(L"\u6A58\u767D\u732B", L"Orange & White Cat"),
             tr(L"\u54C6\u5566A\u68A6", L"Doraemon"),
             tr(L"\u72F8\u82B1\u732B", L"Tabby Cat"),
-            tr(L"\u5446\u732B", L"Dazed Cat")
+            tr(L"\u5446\u732B", L"Dazed Cat"),
+            tr(L"\u76AE\u5361\u4E18", L"Pikachu")
         };
-        for (int i = 0; i < BUILT_IN_COAT_COUNT; ++i) SendMessageW(coatCb, CB_ADDSTRING, 0, (LPARAM)builtins[i]);
+        for (const wchar_t* coat : builtins) SendMessageW(coatCb, CB_ADDSTRING, 0, (LPARAM)coat);
         int sel = (int)app.settings.coatTheme;
         for (size_t i = 0; i < app.skins.skins.size(); ++i) {
             SendMessageW(coatCb, CB_ADDSTRING, 0, (LPARAM)utf8ToWide(app.skins.displayName(app.skins.skins[i])).c_str());
             if (!app.settings.customSkin.empty() && app.skins.skins[i].id == app.settings.customSkin) {
-                sel = BUILT_IN_COAT_COUNT + (int)i;
+                sel = BuiltInCoatCount + (int)i;
             }
         }
         SendMessageW(coatCb, CB_SETCURSEL, (WPARAM)sel, 0);
@@ -1623,7 +1630,7 @@ LRESULT CALLBACK settingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                         return 0;
                     }
                     app->settings.overrideSkinIris = false;
-                    if (sel < BUILT_IN_COAT_COUNT) {
+                    if (sel < BuiltInCoatCount) {
                         app->settings.customSkin.clear();
                         app->settings.coatTheme = (CatCoatTheme)sel;
                         switch (app->settings.coatTheme) {
@@ -1632,11 +1639,12 @@ LRESULT CALLBACK settingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                             case CatCoatTheme::Shorthair:    app->settings.eyeTheme = EyeColorTheme::ReferenceHazel; break;
                             case CatCoatTheme::OrangeWhite:  app->settings.eyeTheme = EyeColorTheme::WarmAmber; break;
                             case CatCoatTheme::Doraemon:     app->settings.eyeTheme = EyeColorTheme::IceCyan; break;
+                            case CatCoatTheme::Pikachu:      app->settings.eyeTheme = EyeColorTheme::WarmAmber; break;
                             case CatCoatTheme::Dazed:        app->settings.eyeTheme = EyeColorTheme::SoftAmber; break;
                             case CatCoatTheme::Tabby:        app->settings.eyeTheme = EyeColorTheme::OliveGold; break;
                         }
-                    } else if ((size_t)(sel - BUILT_IN_COAT_COUNT) < app->skins.skins.size()) {
-                        app->settings.customSkin = app->skins.skins[sel - BUILT_IN_COAT_COUNT].id;
+                    } else if ((size_t)(sel - BuiltInCoatCount) < app->skins.skins.size()) {
+                        app->settings.customSkin = app->skins.skins[sel - BuiltInCoatCount].id;
                     }
                     app->settings.saveToRegistry();
                     refreshDressingRoom(*app);
@@ -2018,6 +2026,8 @@ void showContextMenu(AppState& app, POINT screenPt) {
         AppendMenuW(coatMenu, MF_STRING | coatCheck(CatCoatTheme::Doraemon),
                     CMD_COAT_DORAEMON, tr(L"\u54C6\u5566A\u68A6", L"Doraemon"));
     }
+    AppendMenuW(coatMenu, MF_STRING | coatCheck(CatCoatTheme::Pikachu),
+                CMD_COAT_PIKACHU, tr(L"\u76AE\u5361\u4E18", L"Pikachu"));
     AppendMenuW(coatMenu, MF_STRING | coatCheck(CatCoatTheme::Dazed), CMD_COAT_DAZED, tr(L"\u5446\u732B", L"Dazed Cat"));
     AppendMenuW(coatMenu, MF_STRING | coatCheck(CatCoatTheme::Tabby), CMD_COAT_TABBY, tr(L"\u72F8\u82B1\u732B", L"Tabby Cat"));
     size_t listed = std::min<size_t>(app.skins.skins.size(), CMD_SKIN_RANGE);
@@ -2257,6 +2267,13 @@ void showContextMenu(AppState& app, POINT screenPt) {
             app.settings.eyeTheme = EyeColorTheme::IceCyan;
             app.settings.saveToRegistry();
             break;
+        case CMD_COAT_PIKACHU:
+            app.settings.overrideSkinIris = false;
+            app.settings.customSkin.clear();
+            app.settings.coatTheme = CatCoatTheme::Pikachu;
+            app.settings.eyeTheme = EyeColorTheme::WarmAmber;
+            app.settings.saveToRegistry();
+            break;
         case CMD_COAT_DAZED:
             app.settings.overrideSkinIris = false;
             app.settings.customSkin.clear();
@@ -2415,7 +2432,7 @@ void tickAndRender(AppState& app) {
                 app.hasLastHover = false;
             } else {
                 Pt cp = CatRenderer::canvasPointToCatSpace(rawCp, app.settings.flipHorizontal, app.settings.rotationDeg);
-                CatHitZone zone = CatRenderer::hitTest(cp, app.physics, activeSkin(app), activeDoraemon(app));
+                CatHitZone zone = CatRenderer::hitTest(cp, app.physics, curSkin, activeDoraemon(app), activePikachu(app));
                 app.physics.updateTailHover(&cp);
                 if (zone == CatHitZone::Head) {
                     bool skipPetForHunt = (curSkin.renderStyle == SkinRenderStyle::Douni && app.physics.huntIntensity.value > 0.20f);
@@ -2477,7 +2494,8 @@ void tickAndRender(AppState& app) {
     Gdiplus::Graphics g(&bmp);
     g.Clear(app.settings.obsCaptureMode == 2 ? Gdiplus::Color(255, 0, 255, 0) : Gdiplus::Color(0, 0, 0, 0));
     g.ScaleTransform((float)w / CatPhysics::CanvasWidth, (float)h / CatPhysics::CanvasHeight);
-    CatRenderer::draw(g, app.physics, app.settings, activeSkin(app), activeKeyboardSkin(app), activeDoraemon(app));
+    CatRenderer::draw(g, app.physics, app.settings, activeSkin(app), activeKeyboardSkin(app),
+                      activeDoraemon(app), activePikachu(app));
 
     // Green-screen mode (#00FF00) disables WS_EX_LAYERED so BitBlt / PrintWindow / Bilibili Live / OBS
     // all capture the solid window directly without black-screen issues; transparent modes use UpdateLayeredWindow.
@@ -3029,6 +3047,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     Gdiplus::GdiplusStartupInput gdipInput;
     ULONG_PTR gdipToken = 0;
     Gdiplus::GdiplusStartup(&gdipToken, &gdipInput, nullptr);
+    app.pikachu = std::make_unique<PikachuRenderer>();
     app.doraemon = DoraemonRenderer::load();
     if (!app.doraemon && app.settings.coatTheme == CatCoatTheme::Doraemon) {
         app.settings.coatTheme = CatCoatTheme::ClassicBlack;
@@ -3114,6 +3133,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     );
     if (!app.hwnd) {
         if (app.menuOwnerHwnd) DestroyWindow(app.menuOwnerHwnd);
+        app.pikachu.reset();
         app.doraemon.reset();
         Gdiplus::GdiplusShutdown(gdipToken);
         if (hMutex) CloseHandle(hMutex);
@@ -3178,6 +3198,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
 
     CatSettings::saveStatsToRegistry(app.statsDay, app.input.totalKeystrokesToday, app.physics.totalPetSessions);
     g_app = nullptr;
+    app.pikachu.reset();
     app.doraemon.reset();
     Gdiplus::GdiplusShutdown(gdipToken);
     if (hMutex) CloseHandle(hMutex);

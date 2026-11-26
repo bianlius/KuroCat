@@ -9,13 +9,13 @@
 #include <algorithm>
 #include "CatPhysics.hpp"
 #include "DoraemonRenderer.hpp"
+#include "PikachuRenderer.hpp"
 #include "TabbyCoat.hpp"
 #include "../../shared/CoatPatterns.hpp"
 #include "../../shared/SkinSpec.hpp"
 #include "../../shared/KeyboardSkinSpec.hpp"
 
-// The six built-in coats expressed as SkinSpecs, using the exact 8-bit colours the GDI+ renderer always
-// used, so built-ins render exactly as before. (skins/*.kurocat are the portable templates of these coats.)
+// Built-in skin metadata and palettes. Character renderers draw their own artwork.
 inline const SkinSpec& builtInSkin(CatCoatTheme coat) {
     static const std::vector<SkinSpec> skins = [] {
         auto c8 = [](int r, int g, int b, int a = 255) { return SkinColor::rgba(r / 255.0, g / 255.0, b / 255.0, a / 255.0); };
@@ -31,7 +31,7 @@ inline const SkinSpec& builtInSkin(CatCoatTheme coat) {
             }
             return rings;
         };
-        std::vector<SkinSpec> v(static_cast<size_t>(CatCoatTheme::Dazed) + 1);
+        std::vector<SkinSpec> v(BuiltInCoatCount);
         SkinSpec& k = v[0];
         k.id = "builtin:0"; k.name = "经典小黑猫"; k.builtIn = true;
         k.palette.body = k.palette.legs = k.palette.paws = k.palette.earOuter = k.palette.tail = black;
@@ -77,6 +77,11 @@ inline const SkinSpec& builtInSkin(CatCoatTheme coat) {
         doraemon.id = "builtin:doraemon";
         doraemon.name = "哆啦A梦";
 
+        SkinSpec& pikachu = v[static_cast<size_t>(CatCoatTheme::Pikachu)];
+        pikachu = v[0];
+        pikachu.id = "builtin:pikachu";
+        pikachu.name = "皮卡丘";
+
         SkinSpec& d = v[static_cast<size_t>(CatCoatTheme::Dazed)];
         d.id = "builtin:4"; d.name = "呆猫"; d.builtIn = true;
         d.palette.body = c8(0x4E, 0x57, 0x92);
@@ -98,7 +103,7 @@ inline const SkinSpec& builtInSkin(CatCoatTheme coat) {
         for (SkinSpec& b : v) b.idleLegsTinted = false;
         return v;
     }();
-    return skins[std::clamp(static_cast<int>(coat), 0, static_cast<int>(CatCoatTheme::Dazed))];
+    return skins[std::clamp(static_cast<int>(coat), 0, BuiltInCoatCount - 1)];
 }
 
 class CatRenderer {
@@ -115,9 +120,9 @@ public:
     }
 
     static CatHitZone hitTest(Pt p, const CatPhysics& physics, const SkinSpec& skin,
-                              const DoraemonRenderer* doraemon = nullptr) {
-        if (doraemon) {
-            const CatHitZone zone = DoraemonRenderer::hitTest(p, physics);
+                              const DoraemonRenderer* doraemon = nullptr, const PikachuRenderer* pikachu = nullptr) {
+        if (doraemon || pikachu) {
+            const CatHitZone zone = pikachu ? pikachu->hitTest(p, physics) : DoraemonRenderer::hitTest(p, physics);
             if (zone != CatHitZone::None) return zone;
             if (p.x >= 58.0f && p.x <= 294.0f && p.y >= 232.0f && p.y <= 296.0f) return CatHitZone::Body;
             return CatHitZone::None;
@@ -210,7 +215,7 @@ public:
     }
 
     static void draw(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings, const SkinSpec& skin, const KeyboardSkinSpec& kbSkin,
-                     const DoraemonRenderer* doraemon = nullptr) {
+                     const DoraemonRenderer* doraemon = nullptr, const PikachuRenderer* pikachu = nullptr) {
         using namespace Gdiplus;
         whiteOutlineEnabled() = settings.whiteOutline;
         g.SetSmoothingMode(SmoothingModeAntiAlias);
@@ -257,7 +262,7 @@ public:
 
         // Universal Scruff-Lifted Drag Pose (ALL non-Douni cat skins keep their own authentic KuroCat face/head/ears/markings in front,
         // with scruff-lifted arched neck/back, 4 dangling swinging paws, carried peripherals, and limp drooping tail!)
-        if (scruff > 0.005f && !doraemon) {
+        if (scruff > 0.005f && !doraemon && !pikachu) {
             drawNativeScruffDragCat(g, physics, skin, settings.eyeTheme, kbSkin, settings.keyboardTheme,
                                     settings.showKeyLegends, settings.keyboardMarquee, settings.overrideSkinIris, scruff,
                                     settings.flipHorizontal);
@@ -298,8 +303,10 @@ public:
         drawKeyboard(g, physics, kbSkin, settings.eyeTheme, settings.showKeyLegends,
                      settings.keyboardMarquee, settings.flipHorizontal, &keyboardDeck);
 
-        if (doraemon) {
-            doraemon->draw(g, physics, eyePrimary(settings.eyeTheme), keyboardDeck);
+        if (doraemon || pikachu) {
+            const Color eyeColor = eyePrimary(settings.eyeTheme);
+            if (pikachu) pikachu->draw(g, physics, eyeColor, keyboardDeck);
+            else doraemon->draw(g, physics, eyeColor, keyboardDeck);
             drawSceneEffects(g, physics, settings);
             g.Restore(flipState);
             if (settings.isEditMode) {

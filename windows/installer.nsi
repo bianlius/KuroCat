@@ -30,6 +30,8 @@ VIAddVersionKey "LegalCopyright" "KuroCat contributors"
 
 LangString Requires64Bit ${LANG_ENGLISH} "KuroCat requires 64-bit Windows."
 LangString Requires64Bit ${LANG_SIMPCHINESE} "KuroCat 需要 64 位 Windows。"
+LangString CloseBeforeInstall ${LANG_ENGLISH} "Close the running KuroCat and run Setup again."
+LangString CloseBeforeInstall ${LANG_SIMPCHINESE} "请退出正在运行的 KuroCat 后重新安装。"
 LangString CloseAndRetry ${LANG_ENGLISH} "Close KuroCat and run the uninstaller again."
 LangString CloseAndRetry ${LANG_SIMPCHINESE} "请退出 KuroCat 后重新运行卸载程序。"
 
@@ -49,8 +51,11 @@ FunctionEnd
 
 Section "KuroCat"
     SetShellVarContext current
-    ${If} ${FileExists} "$INSTDIR\KuroCat.exe"
-        !insertmacro CloseKuroCat
+    !insertmacro CloseKuroCat
+    FindWindow $0 "KuroCatOverlayWindowClass"
+    ${If} $0 != 0
+        MessageBox MB_OK|MB_ICONSTOP "$(CloseBeforeInstall)"
+        Abort
     ${EndIf}
 
     SetOutPath "$INSTDIR"

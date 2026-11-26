@@ -61,7 +61,7 @@
   - **Petting & Sleep**: Stroke the cat's head for cozy closed eyes `— —` and shimmer particles; leave it idle to fall asleep with floating `z`s.
   - **Click-Through & Launch at Login**: Transparent areas pass clicks through automatically. You can enable **Full Click-Through** for competitive gaming and **Launch at Login**.
 - **🎨 Skins, Themes & Stats**
-  - Built-in skins (Classic Black, Siamese, American Shorthair, Orange & White, Brown Mackerel Tabby, Doraemon on macOS and Windows, and Pikachu on macOS) plus community `.kurocat` skins & `.kurokb` keyboards.
+  - Built-in skins include Classic Black, Siamese, American Shorthair, Orange & White, and Brown Mackerel Tabby. Doraemon and Pikachu are available on macOS and Windows. You can also import community `.kurocat` skins and `.kurokb` keyboards.
   - 3 keyboard themes, 6+ eye colors, 5 scale levels, daily keystroke counter, and live KPM stats.
 
 <details>
@@ -80,7 +80,7 @@
   <img src="assets/preview_tabby_windows.png" width="520" alt="Classic Black and Brown Mackerel Tabby sitting and typing"/>
 </p>
 
-### Pikachu (macOS)
+### Pikachu (macOS and Windows)
 
 <img src="assets/preview_pikachu.png" width="840" alt="Pikachu: seated, looking left/right, keyboard and mouse, petting, and sleep"/>
 

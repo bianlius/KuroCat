@@ -11,6 +11,7 @@ enum PikachuRenderer {
     private static let brown = color(0xA85E1C)
     private static let white = color(0xFFFFFF)
     private static let lineWidth: CGFloat = 1.15
+    private static let artworkScale: CGFloat = 1.0
     // Move the seated figure to the back edge of the keyboard deck.
     private static let seatOffsetY: CGFloat = 16
 
@@ -28,7 +29,7 @@ enum PikachuRenderer {
             var bodyTransform = CGAffineTransform(translationX: CatPhysics.seatAnchor.x + physics.bodyShiftX.value,
                                      y: CatPhysics.seatAnchor.y + seatOffsetY - scruff * 20 + lie * 6 + dizzy * 6)
                 .rotated(by: physics.bodyTilt.value * 0.45 + physics.scruffSwing.value * 0.5 - dizzy * 0.18)
-                .scaledBy(x: 1.08, y: 1.08 * squash)
+                .scaledBy(x: artworkScale, y: artworkScale * squash)
                 .translatedBy(x: -96, y: -207)
             // Turn and look without changing the character's size as the pointer crosses the screen.
             let headTransform = CGAffineTransform(translationX: 96 + physics.headYaw.value * 1.8,
