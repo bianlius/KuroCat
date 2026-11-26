@@ -378,15 +378,17 @@ enum PikachuRenderer {
 
         let highlightHalfWidth: CGFloat = 3.2
         let highlightHalfHeight = height * 0.425
-        let highlightX = gaze.x * 3 - 1.6
-        let highlightY = height * (gaze.y * 0.24 - 0.395)
-        // Bound the highlight's travel within the eye ellipse, including during blinks.
-        let distance = hypot(highlightX / width, highlightY / height)
-        let limit = 1 - max(highlightHalfWidth / width, highlightHalfHeight / height)
-        let fit = max(1, distance / limit)
+        // Ease from the upper-left resting highlight toward the edge in the gaze direction.
+        let magnitude = hypot(gaze.x, gaze.y)
+        let reach = clamp(magnitude / 0.85)
+        let blend = reach * (2 - reach)
+        let limit = 0.95 - max(highlightHalfWidth / width, highlightHalfHeight / height)
+        let travel = blend * limit / max(magnitude, 0.001)
+        let highlightX = -1.6 * (1 - blend) + width * gaze.x * travel
+        let highlightY = height * (-0.395 * (1 - blend) + gaze.y * travel)
         ctx.setFillColor(white)
-        ctx.fillEllipse(in: CGRect(x: cx + highlightX / fit - highlightHalfWidth,
-                                  y: cy + highlightY / fit - highlightHalfHeight,
+        ctx.fillEllipse(in: CGRect(x: cx + highlightX - highlightHalfWidth,
+                                  y: cy + highlightY - highlightHalfHeight,
                                   width: highlightHalfWidth * 2, height: highlightHalfHeight * 2))
         ctx.restoreGState()
     }

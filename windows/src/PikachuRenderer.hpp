@@ -479,12 +479,16 @@ private:
 
         constexpr float halfHighlightWidth = 3.2f;
         const float halfHighlightHeight = height * 0.425f;
-        const float highlightX = gaze.x * 3 - 1.6f;
-        const float highlightY = height * (gaze.y * 0.24f - 0.395f);
-        const float limit = 1 - std::max(halfHighlightWidth / width, halfHighlightHeight / height);
-        const float fit = std::max(1.0f, std::hypot(highlightX / width, highlightY / height) / limit);
+        // Ease from the upper-left resting highlight toward the edge in the gaze direction.
+        const float magnitude = std::hypot(gaze.x, gaze.y);
+        const float reach = clamp01(magnitude / 0.85f);
+        const float blend = reach * (2 - reach);
+        const float limit = 0.95f - std::max(halfHighlightWidth / width, halfHighlightHeight / height);
+        const float travel = blend * limit / std::max(magnitude, 0.001f);
+        const float highlightX = -1.6f * (1 - blend) + width * gaze.x * travel;
+        const float highlightY = height * (-0.395f * (1 - blend) + gaze.y * travel);
         Gdiplus::SolidBrush white(Color(0xffffffff));
-        g.FillEllipse(&white, cx + highlightX / fit - halfHighlightWidth, cy + highlightY / fit - halfHighlightHeight,
+        g.FillEllipse(&white, cx + highlightX - halfHighlightWidth, cy + highlightY - halfHighlightHeight,
                       halfHighlightWidth * 2, halfHighlightHeight * 2);
         g.Restore(clip);
     }

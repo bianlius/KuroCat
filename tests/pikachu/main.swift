@@ -69,13 +69,56 @@ func crop(_ image: CGImage, _ rect: CGRect) -> Data {
     return cropped.dataProvider!.data! as Data
 }
 
+func highlight(in region: CGRect, of image: CGImage) -> (center: CGPoint, area: Int) {
+    precondition(image.bitsPerPixel == 32)
+    let bytes = image.dataProvider!.data! as Data
+    var area = 0
+    var xTotal = 0
+    var yTotal = 0
+    bytes.withUnsafeBytes { (pixels: UnsafeRawBufferPointer) in
+        for y in Int(region.minY)..<Int(region.maxY) {
+            for x in Int(region.minX)..<Int(region.maxX) {
+                let offset = y * image.bytesPerRow + x * 4
+                if pixels[offset..<(offset + 4)].allSatisfy({ $0 >= 240 }) {
+                    area += 1
+                    xTotal += x
+                    yTotal += y
+                }
+            }
+        }
+    }
+    precondition(area > 0, "No white highlight detected in the eye")
+    return (CGPoint(x: CGFloat(xTotal) / CGFloat(area), y: CGFloat(yTotal) / CGFloat(area)), area)
+}
+
+func renderGaze(x: CGFloat, y: CGFloat) -> CGImage {
+    let p = physics(0)
+    p.eyeGaze.x.value = x
+    p.eyeGaze.y.value = y
+    return render(p)
+}
+
 let idle = render(physics(0))
 let typing = render(physics(3))
 let face = CGRect(x: 265, y: 96, width: 215, height: 208)
 precondition(crop(idle, face) == crop(typing, face), "A reaching arm changed the face")
-let eyes = CGRect(x: 285, y: 175, width: 160, height: 42)
+let eyes = CGRect(x: 286, y: 210, width: 162, height: 55)
 precondition(crop(idle, eyes) != crop(render(physics(4)), eyes), "Petting does not close the eyes")
-precondition(crop(idle, eyes) != crop(render(physics(1)), eyes), "Eyes do not follow the pointer")
+let lookRight = renderGaze(x: 0.35, y: 0)
+let lookDown = renderGaze(x: 0, y: 0.35)
+let lookDownRight = renderGaze(x: 0.65, y: 0.65)
+for eyeX in [286, 392] {
+    let eye = CGRect(x: eyeX, y: 210, width: 56, height: 55)
+    let resting = highlight(in: eye, of: idle)
+    let right = highlight(in: eye, of: lookRight)
+    let down = highlight(in: eye, of: lookDown)
+    let diagonal = highlight(in: eye, of: lookDownRight)
+    precondition(right.center.x > resting.center.x + 6, "Highlight travel to the right is too small")
+    precondition(down.center.y > resting.center.y + 7, "Highlight travel downward is too small")
+    precondition(diagonal.center.x > resting.center.x + 6 && diagonal.center.y > resting.center.y + 7,
+                 "The highlight fails to follow a diagonal gaze")
+    precondition(diagonal.area * 5 >= resting.area * 4, "The eye edge clips the highlight")
+}
 precondition(PikachuRenderer.hitTest(point: CGPoint(x: 184, y: 110), physics: physics(0)) == .head)
 precondition(PikachuRenderer.hitTest(point: CGPoint(x: 184, y: 190), physics: physics(0)) == .body)
 precondition(PikachuRenderer.hitTest(point: CGPoint(x: 10, y: 10), physics: physics(0)) == nil)
