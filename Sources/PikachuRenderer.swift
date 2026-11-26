@@ -11,7 +11,7 @@ enum PikachuRenderer {
     private static let brown = color(0xA85E1C)
     private static let white = color(0xFFFFFF)
     private static let lineWidth: CGFloat = 1.15
-    private static let artworkScale: CGFloat = 1.0
+    private static let artworkScale: CGFloat = 1.04
     // Move the seated figure to the back edge of the keyboard deck.
     private static let seatOffsetY: CGFloat = 16
 

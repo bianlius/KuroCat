@@ -29,6 +29,7 @@ struct DoraemonRenderer {
                                                       locations: nil)
     private static let coatBlue = CGColor(srgbRed: 0, green: 159.0/255, blue: 222.0/255, alpha: 1)
     private static let handCenter = CGPoint(x: 99, y: 107.2)
+    private static let bodyScale: CGFloat = 1.6
     private static let figureArtwork = CGAffineTransform(translationX: 64, y: 128)
         .scaledBy(x: 1.12, y: 1.12)
         .translatedBy(x: -64, y: -128)
@@ -43,7 +44,7 @@ struct DoraemonRenderer {
             let seat = CatPhysics.seatAnchor
             body = CGAffineTransform(translationX: seat.x + physics.bodyShiftX.value, y: seat.y + 24)
                 .rotated(by: physics.bodyTilt.value * 0.65)
-                .scaledBy(x: 1.50, y: 1.50)
+                .scaledBy(x: bodyScale, y: bodyScale)
                 .translatedBy(x: -64, y: -128)
 
             let yaw = physics.headYaw.value

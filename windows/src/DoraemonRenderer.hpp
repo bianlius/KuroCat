@@ -77,6 +77,7 @@ public:
 private:
     static constexpr float SpriteSize = 128.0f;
     static constexpr float RadToDeg = 57.2957795f;
+    static constexpr float BodyScale = 1.6f;
     static constexpr float ArtworkScale = 1.12f;
     static Gdiplus::Color ink(BYTE alpha = 255) { return Gdiplus::Color(alpha, 11, 17, 22); }
 
@@ -121,7 +122,7 @@ private:
         explicit Pose(const CatPhysics& physics) {
             body.Translate(CatPhysics::SeatAnchor.x + physics.bodyShiftX.value, CatPhysics::SeatAnchor.y + 24.0f);
             body.Rotate(physics.bodyTilt.value * 0.65f * RadToDeg);
-            body.Scale(1.50f, 1.50f);
+            body.Scale(BodyScale, BodyScale);
             body.Translate(-64.0f, -128.0f);
 
             const float yaw = physics.headYaw.value;

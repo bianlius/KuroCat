@@ -16,7 +16,7 @@ class PikachuRenderer {
 
     static constexpr float Pi = 3.14159265f;
     static constexpr float RadToDeg = 180.0f / Pi;
-    static constexpr float ArtworkScale = 1.0f;
+    static constexpr float ArtworkScale = 1.04f;
     static constexpr float LineWidth = 1.15f;
     static constexpr Pt LeftEarTip{4, 7};
     static constexpr Gdiplus::ARGB Ink = 0xff171812;
