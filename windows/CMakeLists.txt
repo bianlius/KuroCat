@@ -12,6 +12,7 @@ target_include_directories(KuroCat PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 set(DORAEMON_ART "${CMAKE_CURRENT_SOURCE_DIR}/../Resources/Doraemon")
 set_property(SOURCE app.rc PROPERTY OBJECT_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/app.manifest"
+    "${CMAKE_CURRENT_SOURCE_DIR}/resource.rc"
     "${DORAEMON_ART}/head.png"
     "${DORAEMON_ART}/body.png"
     "${DORAEMON_ART}/hand.png"

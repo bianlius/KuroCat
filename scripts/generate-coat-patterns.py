@@ -106,11 +106,59 @@ def outputs():
             cpp+='            '+', '.join('{'+f'{float(x):.5f}f, {float(y):.5f}f'+'}' for x,y in pts)+'}},\n'
         swift+='    ]\n';cpp+='    };\n    return marks;\n}\n'
     swift+='    static func marks(for coat: CatCoatTheme) -> [CoatMark] {\n        switch coat {\n        case .shorthair: return shorthair\n        case .orangeWhite: return orangeWhite\n        default: return []\n        }\n    }\n}\n'
-    return {ROOT/'Sources/CoatPatterns.swift':swift,ROOT/'shared/CoatPatterns.hpp':cpp}
+    files={ROOT/'Sources/CoatPatterns.swift':swift,ROOT/'shared/CoatPatterns.hpp':cpp}
+    files.update(templates(dict(skins)))
+    return files
+
+# --- .kurocat templates of the four built-in coats (docs/skin-format.md) ---------------------------
+# Colours are the Linux/Cairo renderer's exact doubles rounded to #RRGGBB(AA); the apps keep the exact
+# values in their built-in SkinSpecs; imported templates render within 3/255 (premultiplied) of them.
+def hx(r,g,b,a=1.0):
+    c=''.join(f'{round(v*255):02X}' for v in (r,g,b))
+    return '#'+c+('' if a>=1 else f'{round(a*255):02X}')
+def hexrgb(rgb,a=1.0): return hx(((rgb>>16)&255)/255,((rgb>>8)&255)/255,(rgb&255)/255,a)
+BLACK=hx(.085,.085,.095); MINT=hx(.82,.92,.89,.76); WHISKER=hx(.88,.90,.92,.68)
+LIGHT_WHISKER=hexrgb(0x8D8170,.68); LIGHT_CREASE=hexrgb(0x8B8171,.60)
+POINT=hx(.208,.149,.122)
+PALETTES={
+ 'black':('经典小黑猫',{'body':BLACK,'legs':BLACK,'paws':BLACK,'earOuter':BLACK,'tail':BLACK,'whiskers':WHISKER,'crease':MINT},
+          {'build':'standard'},'dome',None),
+ 'siamese':('挖煤暹罗猫',{'body':hx(.965,.937,.894),'bodyShade':hx(.918,.859,.784),'points':POINT,'pointsMid':hx(.416,.314,.255),
+          'legs':POINT,'paws':POINT,'earOuter':POINT,'tail':POINT,'earInner':hx(.365,.275,.228),'outline':hx(.68,.59,.50,.42),
+          'crease':hx(.553,.471,.404,.54),'whiskers':hx(.478,.388,.325,.62),'nose':hx(.14,.09,.08,.95),'mouth':hx(.78,.66,.56,.55)},
+          {'build':'sleek'},'dome',None),
+ 'shorthair':('美短（银虎斑加白）',{'body':hexrgb(0xC2C5C1),'legs':hexrgb(MILK),'earOuter':hexrgb(0xC2C5C1),'tail':hexrgb(0xC2C5C1),
+          'belly':hexrgb(MILK),'paws':hexrgb(MILK),'stripes':hexrgb(0x55595A),'whiskers':LIGHT_WHISKER,'crease':LIGHT_CREASE},
+          {'build':'standard','pawStagger':0},'plane',0x55595A),
+ 'orangeWhite':('橘白猫',{'body':hexrgb(MILK),'legs':hexrgb(MILK),'earOuter':hexrgb(GINGER),'tail':hexrgb(GINGER),
+          'belly':hexrgb(MILK),'paws':hexrgb(MILK),'stripes':hexrgb(0xA57543),'whiskers':LIGHT_WHISKER,'crease':LIGHT_CREASE},
+          {'build':'standard','pawStagger':0},'dome',0xA57543),
+}
+def templates(artworks):
+    import json
+    out={}
+    for key,(name,palette,shape,surface,rings) in PALETTES.items():
+        marks=[]
+        for head,w,rgb,a,pts in artworks.get(key,[]):
+            m={'space':'skull' if head==2 else ('head' if head else 'body'),'kind':'stroke' if w else 'polygon','color':hexrgb(rgb)}
+            if head==4: m['clipToBib']=True
+            if a!=1: m['alpha']=float(n(a))
+            if w: m['width']=float(n(w))
+            m['points']=[[float(n(x)),float(n(y))] for x,y in pts]
+            marks.append(m)
+        if rings is not None:
+            for x in (50,78): marks.append({'space':'tail','kind':'stroke','color':hexrgb(rings),'alpha':0.5,'width':3.5,'points':[[x,8],[x,-8]]})
+        doc={'formatVersion':1,'name':name,'author':'KuroCat','palette':palette,'shape':shape,'headSurface':surface,'idleLegs':'chest','marks':marks}
+        text=json.dumps(doc,ensure_ascii=False,indent=1)
+        # keep each point list on one line so the templates stay readable
+        import re
+        text=re.sub(r'\[\n\s*(-?[\d.]+),\n\s*(-?[\d.]+)\n\s*\]',r'[\1, \2]',text)
+        out[ROOT/'skins'/f'{key}.kurocat']=text+'\n'
+    return out
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--check',action='store_true');args=p.parse_args()
     for path,text in outputs().items():
         if args.check:
             if not path.exists() or path.read_text()!=text:raise SystemExit(f'Generated artwork is stale: {path}')
-        else:path.write_text(text)
+        else:path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text)
     print('Shared coat artwork is consistent' if args.check else 'Generated native coat artwork')

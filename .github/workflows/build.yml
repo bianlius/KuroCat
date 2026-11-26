@@ -44,6 +44,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify Resources/Info.plist version matches Git tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          PLIST_VER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+          if [ "$PLIST_VER" != "$TAG_VER" ]; then
+            echo "::error::Resources/Info.plist CFBundleShortVersionString ($PLIST_VER) does not match Git tag ($GITHUB_REF_NAME)."
+            echo "Please update CFBundleShortVersionString (and CFBundleVersion) in Resources/Info.plist before tagging."
+            exit 1
+          fi
+          echo "Verified Resources/Info.plist version ($PLIST_VER) matches tag $GITHUB_REF_NAME."
+
       - name: Check coat artwork and native action regressions
         run: bash scripts/check-skins.sh
 
@@ -151,8 +163,10 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Rename Windows binary
-        run: mv dist/KuroCat.exe dist/KuroCat-Windows-x64.exe
+      - name: Rename and zip Windows binary
+        run: |
+          mv dist/KuroCat.exe dist/KuroCat-Windows-x64.exe
+          (cd dist && zip -q KuroCat-Windows-x64.zip KuroCat-Windows-x64.exe)
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -161,6 +175,7 @@ jobs:
           files: |
             dist/KuroCat-macOS-universal.zip
             dist/KuroCat-Windows-x64.exe
+            dist/KuroCat-Windows-x64.zip
             dist/KuroCat-Linux-amd64.deb
             dist/KuroCat-Linux-x86_64.tar.gz
             dist/KuroCat-Linux-arm64.deb

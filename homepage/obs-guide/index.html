@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KuroCat OBS 直播透明桌宠配置指南（OBS Studio · 抖音直播伴侣 · B 站直播姬 · 权限排错）</title>
+  <meta name="description" content="KuroCat 官方直播与权限完全配置教程：3 分钟将原生 2.5D 敲键盘小猫添加至 OBS Studio、抖音直播伴侣与 B 站直播姬，支持透明窗口捕获与 #00FF00 绿幕色度键、游戏防误触穿透、数位板绘画模式与三端权限排查。" />
+  <meta name="keywords" content="KuroCat OBS教程,OBS透明桌宠,Bongo Cat OBS直播,抖音直播伴侣桌宠,B站直播姬敲键盘小猫,OBS绿幕色度键,数位板直播桌宠,macOS输入监控权限" />
+  <meta name="author" content="chanke17" />
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+  <meta name="theme-color" content="#ffffff" />
+  <link rel="canonical" href="https://kurocat.cc/obs-guide/" />
+
+  <meta property="og:type" content="article" />
+  <meta property="og:site_name" content="KuroCat 官网" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta property="og:title" content="KuroCat OBS 直播透明桌宠配置与权限排错指南" />
+  <meta property="og:description" content="手把手教你把 KuroCat 原生桌宠加入 OBS Studio、抖音直播伴侣与 B 站直播姬，含透明捕获、#00FF00 绿幕、游戏防误触穿透与数位板设置。" />
+  <meta property="og:url" content="https://kurocat.cc/obs-guide/" />
+  <meta property="og:image" content="https://kurocat.cc/assets/og-cover.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="KuroCat OBS Streaming Overlay &amp; Setup Guide" />
+  <meta name="twitter:description" content="Add KuroCat transparent or #00FF00 chroma-key desktop typing cat to OBS Studio, Douyin, and Bilibili live streams." />
+  <meta name="twitter:image" content="https://kurocat.cc/assets/og-cover.png" />
+
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+  <link rel="icon" type="image/png" sizes="48x48" href="/assets/favicon-48.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png" />
+
+  <link rel="stylesheet" href="../site.css?v=20261125c" />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "KuroCat 官网", "item": "https://kurocat.cc/" },
+          { "@type": "ListItem", "position": 2, "name": "OBS 直播与权限指南", "item": "https://kurocat.cc/obs-guide/" }
+        ]
+      },
+      {
+        "@type": "HowTo",
+        "name": "如何把 KuroCat 透明敲键盘小猫添加到 OBS Studio / 抖音直播伴侣 / B 站直播姬",
+        "description": "通过 KuroCat 原生内置的 OBS 透明窗口捕获或绿幕（#00FF00）模式，在 3 分钟内将 2.5D 桌宠无背景接入任意直播推流软件。",
+        "totalTime": "PT3M",
+        "tool": [
+          { "@type": "HowToTool", "name": "KuroCat v1.4.5（macOS / Windows / Linux）" },
+          { "@type": "HowToTool", "name": "OBS Studio / 抖音直播伴侣 / B 站直播姬" }
+        ],
+        "step": [
+          {
+            "@type": "HowToStep",
+            "position": 1,
+            "name": "在 KuroCat 设置中开启 OBS 捕获模式",
+            "text": "右键点击桌面上的 KuroCat 小猫（或顶部菜单栏 / 系统托盘图标），打开「设置」，选择开启「OBS 透明窗口捕获」（推荐）或「OBS 绿幕模式（#00FF00）」。开启后会自动暂停全屏隐藏，避免切换全屏应用时直播画面消失。"
+          },
+          {
+            "@type": "HowToStep",
+            "position": 2,
+            "name": "在 OBS Studio 添加窗口采集来源",
+            "text": "打开 OBS Studio，在「来源」面板点击「+」添加「窗口采集（Windows）」或「macOS 屏幕采集 → 应用程序窗口」，在窗口列表中选择 KuroCat。Windows 端建议将采集方式选为「Windows 10 (1903 及以上)」，并勾选「允许透明」。"
+          },
+          {
+            "@type": "HowToStep",
+            "position": 3,
+            "name": "若使用绿幕模式，添加色度键抠图滤镜",
+            "text": "如果使用抖音直播伴侣或旧版推流软件不支持透明通道，在 KuroCat 中勾选「OBS 绿幕模式（#00FF00）」，然后在直播软件中右键该窗口源 → 滤镜 → 添加「色度键 / 绿幕抠像」，选择绿色（#00FF00）即可干净抠除背景。"
+          },
+          {
+            "@type": "HowToStep",
+            "position": 4,
+            "name": "开启游戏防误触与全屏游戏适配",
+            "text": "直播大型游戏时建议在 KuroCat 菜单中勾选「完全鼠标穿透（游戏防误触）」，并将游戏显示模式设为「无边框窗口化」；若游戏以管理员权限运行（如部分网游），请右键以管理员身份启动 KuroCat 确保按键同步捕获。"
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <svg class="sprite" hidden aria-hidden="true">
+    <symbol id="i-cat" viewBox="0 0 24 24"><path class="fill" d="M4.2 3.4c.4-.2.9-.1 1.2.2l3 2.9a8.9 8.9 0 0 1 7.2 0l3-2.9c.3-.3.8-.4 1.2-.2.4.2.7.6.7 1v8.1c0 4.6-3.9 8.2-8.5 8.2S3.5 17.1 3.5 12.5V4.4c0-.4.3-.8.7-1Zm4.6 9.1a1.3 1.4 0 1 0 0 2.8 1.3 1.4 0 0 0 0-2.8Zm6.4 0a1.3 1.4 0 1 0 0 2.8 1.3 1.4 0 0 0 0-2.8Zm-3.2 3.7-1 .9h2l-1-.9Z"/></symbol>
+    <symbol id="i-out" viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></symbol>
+  </svg>
+
+  <header class="nav" id="nav">
+    <div class="nav-in">
+      <a class="brand" href="/" aria-label="返回 KuroCat 官网">
+        <svg class="brand-mark" aria-hidden="true"><use href="#i-cat" /></svg>
+        <span>KuroCat</span>
+      </a>
+      <nav class="nav-links" aria-label="主导航">
+        <a href="/">官网首页</a>
+        <a class="is-active" href="/obs-guide/">OBS 直播指南</a>
+        <a href="https://workshop.kurocat.cc/" target="_blank" rel="noopener">皮肤工坊<svg class="i i-xs" aria-hidden="true"><use href="#i-out" /></svg></a>
+        <a href="/#download">安装下载</a>
+      </nav>
+      <div class="nav-end">
+        <a class="nav-lang" href="/en/" hreflang="en" lang="en">EN</a>
+        <a class="btn btn-blue btn-s" href="https://kurocat-download.app.workbuddy.host/?sharecode=JVAABIVZ7L" target="_blank" rel="noopener">国内直链下载</a>
+        <button class="nav-menu" id="navMenu" type="button" aria-expanded="false" aria-controls="navDrawer" aria-label="打开菜单">
+          <span></span><span></span>
+        </button>
+      </div>
+    </div>
+    <div class="nav-drawer" id="navDrawer">
+      <a href="/">官网首页</a>
+      <a href="/obs-guide/">OBS 直播指南</a>
+      <a href="https://workshop.kurocat.cc/" target="_blank" rel="noopener">皮肤工坊<svg class="i i-xs" aria-hidden="true"><use href="#i-out" /></svg></a>
+      <a href="/#download">安装下载</a>
+      <a href="/en/" hreflang="en" lang="en">English</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="guide-hero">
+      <div class="wrap">
+        <nav class="guide-crumb" aria-label="面包屑导航">
+          <a href="/">KuroCat 官网</a>
+          <span>/</span>
+          <span>OBS 直播与三端权限指南</span>
+        </nav>
+
+        <span class="guide-badge">官方实操指南 · 适用于 v1.4.5 全平台</span>
+
+        <h1 class="guide-title">OBS 直播透明桌宠与三端权限配置指南</h1>
+        <p class="sec-sub">三分钟把 KuroCat 原生 2.5D 敲键盘小猫无背景接入 OBS Studio、抖音直播伴侣与 B 站直播姬，同时涵盖游戏防误触穿透、数位板绘画同步，以及 macOS / Windows / 统信 UOS 权限排查。</p>
+
+        <div class="guide-toc">
+          <a href="#obs-transparent">01. OBS 透明窗口采集</a>
+          <a href="#obs-chroma">02. 抖音 / B 站绿幕抠像</a>
+          <a href="#gaming-tablet">03. 游戏与数位板直播</a>
+          <a href="#os-permissions">04. 三端权限快速排错</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="guide-sec is-alt" id="obs-transparent">
+      <div class="wrap">
+        <p class="guide-kicker">方案 A · 推荐</p>
+        <h2 class="sec-h">OBS Studio 原生透明窗口捕获</h2>
+        <p class="sec-sub">透明捕获无需抠图、边缘零绿边，完整保留白色贴纸描边与半透明投影，适合 OBS Studio 28+。</p>
+
+        <div class="guide-grid">
+          <article class="guide-card">
+            <h3>Windows 10 / 11 + OBS Studio</h3>
+            <ol>
+              <li>右键桌面小猫或系统托盘里的 KuroCat 图标，打开<strong>「设置」</strong>并勾选<strong>「OBS 透明窗口捕获」</strong>。</li>
+              <li>在 OBS Studio「来源」面板点击 <span class="guide-code">+</span> → 选择<strong>「窗口采集」</strong>。</li>
+              <li>窗口选择 <span class="guide-code">[KuroCat-Windows-x64.exe]: KuroCat</span>。</li>
+              <li>采集方式选为<strong>「Windows 10 (1903 及以上)」</strong>，勾选<strong>「允许透明」</strong>并取消勾选「采集光标」即可。</li>
+            </ol>
+            <div class="guide-note">
+              <strong>提示：</strong>开启 OBS 捕获模式后，KuroCat 会自动暂停「全屏自动隐藏」，防止你切到全屏游戏或全屏 PPT 时直播间小猫消失。
+            </div>
+          </article>
+
+          <article class="guide-card">
+            <h3>macOS 12.3+ + OBS Studio</h3>
+            <ol>
+              <li>点击顶部菜单栏 KuroCat 图标 → <strong>「设置」</strong> → 开启<strong>「OBS 透明窗口捕获」</strong>。</li>
+              <li>在 OBS Studio「来源」中新增<strong>「macOS 屏幕采集」</strong>。</li>
+              <li>采集方式选择<strong>「应用程序窗口」</strong>，目标窗口选中 <span class="guide-code">KuroCat</span>。</li>
+              <li>如使用深色游戏/代码背景，建议在 KuroCat 设置里开启<strong>「柔和白色贴纸外描边」</strong>，轮廓在直播间里会更加立体。</li>
+            </ol>
+            <div class="guide-note">
+              <strong>权限说明：</strong>首次在 macOS 用 OBS 采集窗口，需在「系统设置 → 隐私与安全性 → 录屏与系统录音」中允许 OBS Studio。
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="guide-sec" id="obs-chroma">
+      <div class="wrap">
+        <p class="guide-kicker">方案 B · 全平台通用</p>
+        <h2 class="sec-h">抖音直播伴侣 / B 站直播姬绿幕模式</h2>
+        <p class="sec-sub">部分直播伴侣软件不支持直接读取 Alpha 透明窗口，切换为内置纯色绿幕（<span class="guide-code">#00FF00</span>）一键色度抠图即可完美兼容。</p>
+
+        <div class="guide-grid">
+          <article class="guide-card">
+            <h3>开启纯色绿幕与滤镜</h3>
+            <ol>
+              <li>在 KuroCat 设置中开启<strong>「OBS 绿幕模式（#00FF00）」</strong>，小猫窗口背景会瞬间变为标准荧光纯绿。</li>
+              <li>在抖音直播伴侣 / B 站直播姬中点击<strong>「添加素材 → 窗口捕获」</strong>并选择 KuroCat。</li>
+              <li>选中该图层打开<strong>「滤镜 / 抠图 → 色度键 / 绿幕抠像」</strong>，关键色选择<strong>绿色（#00FF00）</strong>。</li>
+              <li>相似度默认 <span class="guide-code">350–400</span>、平滑度 <span class="guide-code">60–80</span> 即可零锯齿抠干净。</li>
+            </ol>
+          </article>
+
+          <article class="guide-card">
+            <h3>避免绿色毛色/瞳色被误抠</h3>
+            <ul>
+              <li>经典小黑猫默认荧光黄绿瞳在绿幕相似度过高时可能略微发暗，建议把瞳色切为<strong>琥珀金、宝石蓝或冰蓝</strong>，或直接使用<strong>暹罗猫 / 小豆泥 / 怪猎呆猫 / 橘白猫</strong>。</li>
+              <li>也可以去 <a href="https://workshop.kurocat.cc/#plaza" target="_blank" rel="noopener"><strong>KuroCat 皮肤广场</strong></a> 免费下载暖色系皮肤与自定义机械键盘配色，拖到小猫身上即可实时换装。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="guide-sec is-alt" id="gaming-tablet">
+      <div class="wrap">
+        <p class="guide-kicker">高频直播场景</p>
+        <h2 class="sec-h">游戏直播与数位板绘画模式最佳实践</h2>
+        <p class="sec-sub">针对 FPS / MOBA 竞技游戏与数字插画主播打磨的专属细节。</p>
+
+        <div class="guide-grid">
+          <article class="guide-card">
+            <h3>竞技游戏直播防误触</h3>
+            <ul>
+              <li><strong>完全鼠标穿透：</strong>右键菜单勾选「完全鼠标穿透（游戏防误触）」，鼠标甩枪绝不会误点小猫。</li>
+              <li><strong>随时唤回菜单：</strong>点击托盘/菜单栏图标，或 Windows 按 <span class="guide-code">Ctrl + Alt + Shift + P</span>、macOS 按住 <span class="guide-code">Option</span> 键即可唤出设置。</li>
+              <li><strong>游戏内键盘没反应：</strong>若游戏以管理员权限启动（如部分网游反作弊或客户端），右键小猫选择<strong>「以管理员身份重启」</strong>即可正常同步 WASD 与技能键。</li>
+              <li><strong>无边框窗口化：</strong>真正的独占全屏不允许任何桌面顶层窗口覆盖，将游戏改为「无边框全屏」即可在自己屏幕和直播间同时常驻。</li>
+            </ul>
+          </article>
+
+          <article class="guide-card">
+            <h3>数位板绘画自动握笔同步</h3>
+            <ul>
+              <li><strong>免配置自动识别：</strong>连接 Wacom、绘王（Huion）、XP-Pen 等数位板并落笔绘画时，KuroCat 会自动把鼠标切换为 <strong>2.5D 数位板 + 压感笔</strong>握持动画。</li>
+              <li><strong>左右手与角度对齐：</strong>支持 <strong>±180° 自由旋转磁吸对齐</strong>，可完美贴合你直播画布的右下角或左下角构图。</li>
+              <li><strong>写代码 / 写稿直播：</strong>自带实时 KPM 与今日击键统计，并支持 3 键翘后脚、4 键摇尾巴踩键彩蛋，大幅提升观众互动弹幕率。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="guide-sec" id="os-permissions">
+      <div class="wrap">
+        <p class="guide-kicker">三端排错清单</p>
+        <h2 class="sec-h">macOS · Windows · Linux / 统信 UOS 权限说明</h2>
+        <p class="sec-sub">所有键鼠信号仅在本机内存驱动动画，零日志、零上传，全部源码遵循 MIT 协议公开审计。</p>
+
+        <div class="guide-grid">
+          <article class="guide-card">
+            <h3>macOS 输入监控 &amp; 首次打开</h3>
+            <ol>
+              <li>首次打开若提示「无法验证开发者」，请右键 <span class="guide-code">KuroCat.app</span> 选择<strong>「打开」</strong>并在弹窗再次确认。</li>
+              <li>前往<strong>「系统设置 → 隐私与安全性 → 输入监控」</strong>勾选 KuroCat，再从顶部菜单栏点击「重启 KuroCat」即可响应全局打字。</li>
+              <li>v1.4.3 起已使用稳定证书签名，后续版本覆盖升级无需重复授权。</li>
+            </ol>
+          </article>
+
+          <article class="guide-card">
+            <h3>Windows &amp; Linux / 统信 UOS</h3>
+            <ul>
+              <li><strong>Windows SmartScreen：</strong>个人开源软件未购买商业签名证书，比对官网与 GitHub Release 的 SHA-256 一致后点「更多信息 → 仍要运行」即可。</li>
+              <li><strong>统信 UOS / 银河麒麟免密码安装：</strong>下载对应架构（amd64 / arm64）的 <span class="guide-code">.tar.gz</span> 解压后执行 <span class="guide-code">bash install.sh</span> 即可免 sudo 安装到用户目录。</li>
+              <li><strong>纯 Wayland 会话：</strong>执行一次 <span class="guide-code">sudo usermod -aG input $USER</span> 并重新登录即可开启内核级硬件监听。</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="guide-cta">
+          <div>
+            <h2>还没下载 KuroCat 或想换一款专属皮肤？</h2>
+            <p>返回官网体验网页版实时桌宠，或直接前往皮肤工坊把自家猫咪搬进直播间。</p>
+          </div>
+          <div class="guide-cta-actions">
+            <a class="btn btn-m btn-blue" href="/#download">下载 KuroCat v1.4.5</a>
+            <a class="btn btn-m btn-outline-light" href="https://workshop.kurocat.cc/" target="_blank" rel="noopener">打开皮肤工坊</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap">
+      <div class="foot-bottom">
+        <span>© 2026 KuroCat (kurocat.cc) · MIT License · <a href="/">中文官网</a> · <a href="/en/" hreflang="en">English</a> · <a href="https://workshop.kurocat.cc/">皮肤工坊</a> · <a href="/llms.txt">llms.txt</a></span>
+        <span>隐私承诺：不采集键盘输入，不植入广告，不跟踪个人数据。</span>
+      </div>
+    </div>
+  </footer>
+  <script>
+    (function () {
+      var btn = document.getElementById('navMenu');
+      var drawer = document.getElementById('navDrawer');
+      if (!btn || !drawer) return;
+      btn.addEventListener('click', function () {
+        var open = btn.getAttribute('aria-expanded') === 'true';
+        btn.setAttribute('aria-expanded', String(!open));
+        drawer.classList.toggle('open', !open);
+      });
+      drawer.querySelectorAll('a').forEach(function (a) {
+        a.addEventListener('click', function () {
+          btn.setAttribute('aria-expanded', 'false');
+          drawer.classList.remove('open');
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

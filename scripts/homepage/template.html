@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="{{html_lang}}">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>{{meta_title}}</title>
+  <meta name="description" content="{{meta_desc}}" />
+  <meta name="keywords" content="{{meta_keywords}}" />
+  <meta name="author" content="chanke17" />
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+  <meta name="theme-color" content="#ffffff" />
+  <meta name="color-scheme" content="light" />
+  <link rel="canonical" href="{{canonical}}" />
+  <link rel="alternate" hreflang="zh-CN" href="https://kurocat.cc/" />
+  <link rel="alternate" hreflang="en" href="https://kurocat.cc/en/" />
+  <link rel="alternate" hreflang="x-default" href="https://kurocat.cc/en/" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="KuroCat" />
+  <meta property="og:locale" content="{{og_locale}}" />
+  <meta property="og:locale:alternate" content="{{og_locale_alt}}" />
+  <meta property="og:title" content="{{og_title}}" />
+  <meta property="og:description" content="{{meta_desc}}" />
+  <meta property="og:url" content="{{canonical}}" />
+  <meta property="og:image" content="https://kurocat.cc/assets/og-cover.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="{{og_image_alt}}" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="{{og_title}}" />
+  <meta name="twitter:description" content="{{meta_desc}}" />
+  <meta name="twitter:image" content="https://kurocat.cc/assets/og-cover.png" />
+
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+  <link rel="icon" type="image/png" sizes="48x48" href="/assets/favicon-48.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/assets/favicon-192.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png" />
+
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="stylesheet" href="{{base}}site.css?v={{build}}" />
+  <script>
+    document.documentElement.classList.add('js');
+    window.KUROCAT_ASSET_BASE = "{{base}}";
+    window.KUROCAT_BUILD = "{{build}}";
+  </script>
+  <script type="importmap">
+  { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  } }
+  </script>
+  <script type="application/ld+json">
+{{@jsonld}}
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main">{{skip}}</a>
+
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19h14"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9.5 6 6 6-6"/></symbol>
+    <symbol id="i-out" viewBox="0 0 24 24"><path d="M8 16 16 8M9.5 8H16v6.5"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5.5 12.5 4 4 9-9"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11m0-11-11 11"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="3"/><path d="M7 10h.01M10.5 10h.01M14 10h.01M17.5 10h.01M8 14h8"/></symbol>
+    <symbol id="i-float" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><rect x="12" y="12" width="6" height="5" rx="1.2"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 4.2 2.35 4.9 5.35.68-3.93 3.7 1 5.32L12 16.2l-4.77 2.6 1-5.32-3.93-3.7 5.35-.68L12 4.2Z"/></symbol>
+    <symbol id="i-apple" viewBox="0 0 24 24"><path class="fill" d="M16.4 12.7c0-2.4 2-3.6 2.1-3.7-1.1-1.7-2.9-1.9-3.5-1.9-1.5-.2-2.9.9-3.6.9-.7 0-1.8-.9-3-.9-1.5 0-3 .9-3.8 2.2-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.3 2.9 2.2 1.2 0 1.6-.7 3-.7 1.4 0 1.8.7 3 .7 1.2 0 2-1.1 2.8-2.2.9-1.3 1.2-2.5 1.3-2.6-.1 0-2.4-.9-2.4-3.3ZM14.1 5.2c.6-.8 1.1-1.9 1-3-.9 0-2.1.6-2.8 1.4-.6.7-1.2 1.8-1 2.9 1 .1 2.1-.5 2.8-1.3Z"/></symbol>
+    <symbol id="i-windows" viewBox="0 0 24 24"><path class="fill" d="M3 5.5 10.5 4.4v7.1H3V5.5Zm8.8-1.3L21 3v9.1h-9.2V4.2ZM3 12.9h7.5v7.1L3 18.9v-6Zm8.8 0H21V21l-9.2-1.3v-6.8Z"/></symbol>
+    <symbol id="i-linux" viewBox="0 0 24 24"><path class="fill" d="M12.3 2.5c-2.4 0-3.4 2.2-3.3 4.4-.5 1.3-2.3 3.3-2.7 5.8-.4 2.6.3 5.4 2.3 7.2 1.2 1.1 2.6 1.6 4 1.6 1.7 0 3.4-.7 4.5-2 1.9-2 2.4-5 1.6-7.6-.6-2.1-1.9-3.9-2.7-5.4.3-2.6-.5-4-3.7-4Zm-.3 6.1c.6 0 1.1.6 1.1 1.4s-.5 1.4-1.1 1.4-1.1-.6-1.1-1.4.5-1.4 1.1-1.4Zm-3 1.1c.5 0 .9.5.9 1.1s-.4 1.1-.9 1.1-.9-.5-.9-1.1.4-1.1.9-1.1Zm6.1 0c.5 0 .9.5.9 1.1s-.4 1.1-.9 1.1-.9-.5-.9-1.1.4-1.1.9-1.1Zm-3.1 3c1.2 0 2.4.2 3.3.7-.3 1.4-1.6 2.6-3.4 2.6s-3.1-1.2-3.4-2.6c.9-.5 2.2-.7 3.5-.7Z"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path class="fill" d="M12 2.3a9.9 9.9 0 0 0-3.13 19.3c.5.09.68-.21.68-.48v-1.7c-2.76.6-3.34-1.33-3.34-1.33-.45-1.15-1.1-1.46-1.1-1.46-.9-.62.07-.6.07-.6 1 .07 1.52 1.03 1.52 1.03.89 1.52 2.33 1.08 2.9.83.09-.65.35-1.09.63-1.34-2.2-.25-4.52-1.1-4.52-4.9 0-1.08.39-1.97 1.02-2.66-.1-.25-.44-1.26.1-2.63 0 0 .84-.27 2.73 1.02a9.4 9.4 0 0 1 4.97 0c1.9-1.29 2.73-1.02 2.73-1.02.54 1.37.2 2.38.1 2.63.64.7 1.02 1.58 1.02 2.66 0 3.81-2.32 4.65-4.53 4.9.36.3.67.9.67 1.83v2.72c0 .27.18.58.69.48A9.9 9.9 0 0 0 12 2.3Z"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24"><path class="fill" fill-rule="evenodd" d="M8 2.5h2v2h4v-2h2v2h1a2.5 2.5 0 0 1 2.5 2.5v1h2v2h-2v4h2v2h-2v1a2.5 2.5 0 0 1-2.5 2.5h-1v2h-2v-2h-4v2H8v-2H7A2.5 2.5 0 0 1 4.5 17v-1h-2v-2h2v-4h-2V8h2V7A2.5 2.5 0 0 1 7 4.5h1v-2Zm1.5 7v5h5v-5h-5Z"/></symbol>
+    <symbol id="i-cat" viewBox="0 0 24 24"><path class="fill" d="M4.2 3.4c.4-.2.9-.1 1.2.2l3 2.9a8.9 8.9 0 0 1 7.2 0l3-2.9c.3-.3.8-.4 1.2-.2.4.2.7.6.7 1v8.1c0 4.6-3.9 8.2-8.5 8.2S3.5 17.1 3.5 12.5V4.4c0-.4.3-.8.7-1Zm4.6 9.1a1.3 1.4 0 1 0 0 2.8 1.3 1.4 0 0 0 0-2.8Zm6.4 0a1.3 1.4 0 1 0 0 2.8 1.3 1.4 0 0 0 0-2.8Zm-3.2 3.7-1 .9h2l-1-.9Z"/></symbol>
+  </svg>
+
+  <!-- Navigation -->
+  <header class="nav" id="nav">
+    <div class="nav-in">
+      <a class="brand" href="#top" aria-label="{{brand_aria}}">
+        <svg class="brand-mark" aria-hidden="true"><use href="#i-cat" /></svg>
+        <span>KuroCat</span>
+      </a>
+      <nav class="nav-links" aria-label="{{nav_aria}}">
+        <a href="#features" data-nav="features">{{nav_features}}</a>
+        <a href="#native" data-nav="native">{{nav_native}}</a>
+        <a href="#skins" data-nav="skins">{{nav_skins}}</a>
+        <a href="#download" data-nav="download">{{nav_download}}</a>
+        <a href="#faq" data-nav="faq">{{nav_faq}}</a>
+        <a href="https://workshop.kurocat.cc/" target="_blank" rel="noopener">{{nav_workshop}}<svg class="i i-xs" aria-hidden="true"><use href="#i-out" /></svg></a>
+      </nav>
+      <div class="nav-end">
+        <a class="nav-lang" href="{{lang_href}}" hreflang="{{lang_alt}}" lang="{{lang_alt}}">{{lang_label}}</a>
+        <a class="nav-gh" href="https://github.com/chanke17/KuroCat" target="_blank" rel="noopener" aria-label="{{gh_aria}}">
+          <svg class="i" aria-hidden="true"><use href="#i-github" /></svg>
+          <span class="nav-gh-count" data-gh-stars>Star</span>
+        </a>
+        <a class="btn btn-blue btn-s" href="#download">{{nav_cta}}</a>
+        <button class="nav-menu" id="navMenu" type="button" aria-expanded="false" aria-controls="navDrawer" aria-label="{{menu_aria}}">
+          <span></span><span></span>
+        </button>
+      </div>
+    </div>
+    <div class="nav-drawer" id="navDrawer">
+      <a href="#features">{{nav_features}}</a>
+      <a href="#native">{{nav_native}}</a>
+      <a href="#skins">{{nav_skins}}</a>
+      <a href="#download">{{nav_download}}</a>
+      <a href="#faq">{{nav_faq}}</a>
+      <a href="https://workshop.kurocat.cc/" target="_blank" rel="noopener">{{nav_workshop}}<svg class="i i-xs" aria-hidden="true"><use href="#i-out" /></svg></a>
+      <a href="https://github.com/chanke17/KuroCat" target="_blank" rel="noopener">GitHub<svg class="i i-xs" aria-hidden="true"><use href="#i-out" /></svg></a>
+      <a href="{{lang_href}}" hreflang="{{lang_alt}}" lang="{{lang_alt}}">{{lang_label_long}}</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- Hero + scroll story share one grid; the live cat stage stays pinned on the right -->
+    <section class="show" id="top" aria-label="{{hero_aria}}">
+      <div class="show-grid">
+        <div class="hero">
+          <h1 class="hero-name" data-intro style="--i:0">KuroCat</h1>
+          <p class="hero-line" data-intro style="--i:1">{{hero_line}}</p>
+          <p class="hero-sub" data-intro style="--i:2">{{hero_sub}}</p>
+          <div class="hero-actions" data-intro style="--i:3">
+            <button class="btn btn-blue btn-l" id="tryBtn" type="button">
+              <svg class="i" aria-hidden="true"><use href="#i-key" /></svg>
+              <span>{{hero_try}}</span>
+            </button>
+            <a class="link-more" id="heroDl" href="#download"><span id="heroDlLabel">{{hero_dl}}</span><svg class="i i-xs" aria-hidden="true"><use href="#i-chevron" /></svg></a>
+          </div>
+          <ul class="hero-spec" data-intro style="--i:4">
+            <li><svg class="i i-xs" aria-hidden="true"><use href="#i-check" /></svg>{{spec_1}}</li>
+            <li><svg class="i i-xs" aria-hidden="true"><use href="#i-check" /></svg>{{spec_2}}</li>
+            <li><svg class="i i-xs" aria-hidden="true"><use href="#i-check" /></svg>{{spec_3}}</li>
+            <li><svg class="i i-xs" aria-hidden="true"><use href="#i-check" /></svg>{{spec_4}}</li>
+          </ul>
+        </div>
+
+        <div class="stage" id="stage" data-mode="desk" data-intro style="--i:5">
+          <div class="stage-panel">
+          <div class="stage-desk" aria-hidden="true">
+            <div class="win">
+              <div class="win-bar"><span></span><span></span><span></span><b>{{editor_file}}</b></div>
+              <div class="win-body">
+                <p class="win-note">{{editor_note}}</p>
+                <p class="win-line"><span id="typedText"></span><span class="caret"></span><span class="win-ghost" id="typedGhost">{{editor_ghost}}</span></p>
+              </div>
+            </div>
+          </div>
+          <div class="stage-green" aria-hidden="true"><span>#00FF00</span></div>
+          <div class="pet-canvas-box" id="petCanvasBox">
+            <div class="pet-mount" id="petHomeMount">
+              <canvas id="livePetCanvas" width="720" height="640" aria-label="{{canvas_aria}}"></canvas>
+            </div>
+            <div class="pet-docked" id="petDockedNotice">
+              <p>{{docked_t}}</p>
+              <button class="btn btn-grey btn-s" type="button" id="petDockBackBtn">{{dock_back}}</button>
+            </div>
+          </div>
+          </div>
+          <div class="stage-hud">
+            <p class="hud-caption" id="stageCaption" aria-live="polite">{{stage_hint}}</p>
+            <div class="hud-right">
+              <span class="hud-count" id="petKeyCounter">KEYS 0</span>
+              <button class="hud-btn" id="petFloatToggle" type="button" aria-pressed="false">
+                <svg class="i i-xs" aria-hidden="true"><use href="#i-float" /></svg>
+                <span id="petFloatLabel">{{float_on}}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="story" id="features">
+          <h2 class="story-head">{{story_h}}</h2>
+          <article class="step" data-step="type">
+            <h3>{{s1_t}}</h3>
+            <p>{{s1_d}}</p>
+            <p class="step-meta">{{s1_m}}</p>
+          </article>
+          <article class="step" data-step="hunt">
+            <h3>{{s2_t}}</h3>
+            <p>{{s2_d}}</p>
+            <p class="step-meta">{{s2_m}}</p>
+          </article>
+          <article class="step" data-step="pet">
+            <h3>{{s3_t}}</h3>
+            <p>{{s3_d}}</p>
+            <p class="step-meta">{{s3_m}}</p>
+          </article>
+          <article class="step" data-step="sleep">
+            <h3>{{s4_t}}</h3>
+            <p>{{s4_d}}</p>
+            <p class="step-meta">{{s4_m}}</p>
+          </article>
+          <article class="step" data-step="obs">
+            <h3>{{s5_t}}</h3>
+            <p>{{s5_d}}</p>
+            <a class="link-more" href="/obs-guide/">{{s5_link}}<svg class="i i-xs" aria-hidden="true"><use href="#i-chevron" /></svg></a>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Native & tiny -->
+    <section class="native" id="native">
+      <div class="wrap">
+        <h2 class="sec-h">{{native_h}}</h2>
+        <p class="sec-sub">{{native_sub}}</p>
+
+        <figure class="sizes">
+          <div class="size-row is-kuro">
+            <span class="size-name">{{size_win}}</span>
+            <span class="size-track"><span class="size-bar" style="--v:{{win_ratio}}"></span></span>
+            <span class="size-val">{{win_size}}</span>
+          </div>
+          <div class="size-row is-kuro">
+            <span class="size-name">{{size_mac}}</span>
+            <span class="size-track"><span class="size-bar" style="--v:{{mac_ratio}}"></span></span>
+            <span class="size-val">{{mac_size}}</span>
+          </div>
+          <div class="size-row is-other">
+            <span class="size-name">{{size_electron}}</span>
+            <span class="size-track"><span class="size-bar" style="--v:1"></span></span>
+            <span class="size-val">80–150 MB</span>
+          </div>
+          <figcaption>{{size_cap}}</figcaption>
+        </figure>
+
+        <ul class="platforms">
+          <li>
+            <span class="plat-mark" aria-hidden="true"><svg class="i"><use href="#i-apple" /></svg></span>
+            <h3>macOS</h3>
+            <p class="plat-stack">Swift · CoreGraphics · IOHIDManager</p>
+            <p>{{plat_mac}}</p>
+          </li>
+          <li>
+            <span class="plat-mark" aria-hidden="true"><svg class="i"><use href="#i-windows" /></svg></span>
+            <h3>Windows</h3>
+            <p class="plat-stack">C++17 · GDI+ · Raw Input</p>
+            <p>{{plat_win}}</p>
+          </li>
+          <li>
+            <span class="plat-mark" aria-hidden="true"><svg class="i"><use href="#i-linux" /></svg></span>
+            <h3>Linux</h3>
+            <p class="plat-stack">C++17 · GTK3 / Cairo · XInput2 / evdev</p>
+            <p>{{plat_linux}}</p>
+          </li>
+          <li>
+            <span class="plat-mark" aria-hidden="true"><svg class="i"><use href="#i-chip" /></svg></span>
+            <h3>{{plat_uos_t}}</h3>
+            <p class="plat-stack">x86_64 · ARM64</p>
+            <p>{{plat_uos}}</p>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- 3D keyboard: every key counts -->
+    <section class="nkro" id="nkro">
+      <div class="wrap">
+        <h2 class="sec-h">{{nkro_h}}</h2>
+        <p class="sec-sub">{{nkro_sub}}</p>
+      </div>
+      <div class="kb-stage" id="kbStage">
+        <canvas class="kb-canvas" id="kbCanvas" aria-hidden="true"></canvas>
+        <div class="kb-flat" id="kbFlat" aria-hidden="true"></div>
+      </div>
+      <div class="wrap">
+        <p class="nkro-meter" aria-live="polite"><span>{{nkro_now}}</span> <b id="nkroNow">0</b> <span class="nkro-sep">/</span> <span>{{nkro_best}}</span> <b id="nkroBest">0</b></p>
+        <p class="nkro-privacy">{{nkro_privacy}}</p>
+      </div>
+    </section>
+
+    <!-- Skins -->
+    <section class="skins" id="skins">
+      <div class="wrap">
+        <h2 class="sec-h">{{skins_h}}</h2>
+        <p class="sec-sub">{{skins_sub}}</p>
+        <div class="skin-show">
+          <div class="skin-view" id="skinView">
+            <canvas id="skinCanvas" width="720" height="640" aria-label="{{skin_canvas_aria}}"></canvas>
+          </div>
+          <div class="skin-picker">
+            <p class="skin-name" id="skinName">{{sk_siamese}}</p>
+            <p class="skin-desc" id="skinDesc">{{sk_siamese_d}}</p>
+            <div class="swatches" role="radiogroup" aria-label="{{swatch_aria}}">
+              <button class="swatch pet-skin-chip active" type="button" role="radio" aria-checked="true" data-skin-id="siamese" data-name="{{sk_siamese}}" data-desc="{{sk_siamese_d}}" style="--c:#E7DAC4;--bg:#EEF3F9"><span class="sr">{{sk_siamese}}</span></button>
+              <button class="swatch pet-skin-chip" type="button" role="radio" aria-checked="false" data-skin-id="black" data-name="{{sk_black}}" data-desc="{{sk_black_d}}" style="--c:#1E1C22;--bg:#F0F4E6"><span class="sr">{{sk_black}}</span></button>
+              <button class="swatch pet-skin-chip" type="button" role="radio" aria-checked="false" data-skin-id="orangeWhite" data-name="{{sk_orange}}" data-desc="{{sk_orange_d}}" style="--c:#DE9A58;--bg:#FBF1E7"><span class="sr">{{sk_orange}}</span></button>
+              <button class="swatch pet-skin-chip" type="button" role="radio" aria-checked="false" data-skin-id="mackerel-tabby" data-name="{{sk_tabby}}" data-desc="{{sk_tabby_d}}" style="--c:#B8A081;--bg:#F4F1EA"><span class="sr">{{sk_tabby}}</span></button>
+              <button class="swatch pet-skin-chip" type="button" role="radio" aria-checked="false" data-skin-id="xiao-douni" data-name="{{sk_douni}}" data-desc="{{sk_douni_d}}" style="--c:#F6EFE6;--bg:#FBF5EE"><span class="sr">{{sk_douni}}</span></button>
+              <button class="swatch pet-skin-chip" type="button" role="radio" aria-checked="false" data-skin-id="dazed-cat" data-name="{{sk_dazed}}" data-desc="{{sk_dazed_d}}" style="--c:#555F9B;--bg:#EEEFF8"><span class="sr">{{sk_dazed}}</span></button>
+            </div>
+            <div class="skin-links">
+              <a class="link-more" href="https://workshop.kurocat.cc/#workshop" target="_blank" rel="noopener">{{skins_ws}}<svg class="i i-xs" aria-hidden="true"><use href="#i-out" /></svg></a>
+              <a class="link-more" href="https://workshop.kurocat.cc/#plaza" target="_blank" rel="noopener">{{skins_plaza}}<svg class="i i-xs" aria-hidden="true"><use href="#i-out" /></svg></a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Open source -->
+    <section class="open" id="open">
+      <div class="wrap">
+        <h2 class="sec-h">{{open_h}}</h2>
+        <p class="sec-sub">{{open_sub}}</p>
+        <div class="repo">
+          <div class="repo-main">
+            <svg class="i repo-mark" aria-hidden="true"><use href="#i-github" /></svg>
+            <div>
+              <p class="repo-name">chanke17 / KuroCat</p>
+              <p class="repo-meta"><span>MIT License</span><span><svg class="i i-xs" aria-hidden="true"><use href="#i-star" /></svg> <b data-gh-stars>—</b></span><span>Forks <b data-gh-forks>—</b></span></p>
+            </div>
+          </div>
+          <a class="btn btn-dark btn-m" href="https://github.com/chanke17/KuroCat" target="_blank" rel="noopener">
+            <svg class="i" aria-hidden="true"><use href="#i-star" /></svg><span>{{open_star}}</span>
+          </a>
+        </div>
+        <ul class="eco">
+          <li>
+            <a href="https://workshop.kurocat.cc/" target="_blank" rel="noopener">
+              <span class="eco-t">{{eco_ws_t}}</span>
+              <span class="eco-d">{{eco_ws_d}}</span>
+              <svg class="i eco-go" aria-hidden="true"><use href="#i-out" /></svg>
+            </a>
+          </li>
+          <li>
+            <a href="https://github.com/chanke17/KuroCat/tree/main/mcp" target="_blank" rel="noopener">
+              <span class="eco-t">KuroCat MCP Server</span>
+              <span class="eco-d">{{eco_mcp_d}}</span>
+              <svg class="i eco-go" aria-hidden="true"><use href="#i-out" /></svg>
+            </a>
+          </li>
+          <li>
+            <a href="https://github.com/chanke17/KuroCat/blob/main/docs/skin-format.md" target="_blank" rel="noopener">
+              <span class="eco-t">{{eco_fmt_t}}</span>
+              <span class="eco-d">{{eco_fmt_d}}</span>
+              <svg class="i eco-go" aria-hidden="true"><use href="#i-out" /></svg>
+            </a>
+          </li>
+          <li>
+            <a href="https://github.com/chanke17/KuroCat-Workshop" target="_blank" rel="noopener">
+              <span class="eco-t">{{eco_pr_t}}</span>
+              <span class="eco-d">{{eco_pr_d}}</span>
+              <svg class="i eco-go" aria-hidden="true"><use href="#i-out" /></svg>
+            </a>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Download -->
+    <section class="download" id="download">
+      <div class="wrap">
+        <h2 class="sec-h">{{dl_h}}</h2>
+        <p class="sec-sub">{{dl_sub}}</p>
+
+        <div class="dl-grid">
+          <article class="dl-col" data-os="mac">
+            <svg class="i i-plat" aria-hidden="true"><use href="#i-apple" /></svg>
+            <h3>{{mac_t}}</h3>
+            <p class="dl-req">{{mac_req}}</p>
+            <p class="dl-file"><span>{{mac_file}}</span><span>{{mac_size}}</span></p>
+            <a class="btn btn-blue btn-m dl-main" href="{{mac_cn}}" target="_blank" rel="noopener"><svg class="i" aria-hidden="true"><use href="#i-download" /></svg><span>{{dl_cn}}</span></a>
+            <a class="link-more" href="{{mac_gh}}" target="_blank" rel="noopener">{{dl_gh}}<svg class="i i-xs" aria-hidden="true"><use href="#i-out" /></svg></a>
+            <details class="sha">
+              <summary>SHA-256<svg class="i i-xs" aria-hidden="true"><use href="#i-down" /></svg></summary>
+              <div class="sha-body"><code>{{mac_sha}}</code><button class="copy" type="button" data-copy="{{mac_sha}}" aria-label="{{copy_aria}}"><svg class="i i-xs" aria-hidden="true"><use href="#i-copy" /></svg></button></div>
+            </details>
+            <p class="dl-note">{{mac_note}}</p>
+          </article>
+
+          <article class="dl-col" data-os="win">
+            <svg class="i i-plat" aria-hidden="true"><use href="#i-windows" /></svg>
+            <h3>{{win_t}}</h3>
+            <p class="dl-req">{{win_req}}</p>
+            <p class="dl-file"><span>{{win_file}}</span><span>{{win_size}}</span></p>
+            <a class="btn btn-blue btn-m dl-main" href="{{win_cn}}" target="_blank" rel="noopener"><svg class="i" aria-hidden="true"><use href="#i-download" /></svg><span>{{dl_cn}}</span></a>
+            <a class="link-more" href="{{win_gh}}" target="_blank" rel="noopener">{{dl_gh}}<svg class="i i-xs" aria-hidden="true"><use href="#i-out" /></svg></a>
+            <details class="sha">
+              <summary>SHA-256<svg class="i i-xs" aria-hidden="true"><use href="#i-down" /></svg></summary>
+              <div class="sha-body"><code>{{win_sha}}</code><button class="copy" type="button" data-copy="{{win_sha}}" aria-label="{{copy_aria}}"><svg class="i i-xs" aria-hidden="true"><use href="#i-copy" /></svg></button></div>
+            </details>
+            <p class="dl-note">{{win_note}}</p>
+          </article>
+
+          <article class="dl-col" data-os="linux">
+            <svg class="i i-plat" aria-hidden="true"><use href="#i-linux" /></svg>
+            <h3>{{lin_t}}</h3>
+            <p class="dl-req">{{lin_req}}</p>
+            <div class="arch" role="tablist" aria-label="{{arch_aria}}">
+              <button type="button" role="tab" aria-selected="true" data-arch="amd">x86_64</button>
+              <button type="button" role="tab" aria-selected="false" data-arch="arm">ARM64</button>
+            </div>
+            <div class="arch-panel" data-arch-panel="amd">
+              <a class="btn btn-blue btn-m dl-main" href="{{debamd_cn}}" target="_blank" rel="noopener"><svg class="i" aria-hidden="true"><use href="#i-download" /></svg><span>.deb · {{debamd_size}}</span></a>
+              <a class="btn btn-grey btn-m" href="{{taramd_cn}}" target="_blank" rel="noopener"><span>{{lin_tar}} · {{taramd_size}}</span></a>
+              <details class="sha">
+                <summary>SHA-256<svg class="i i-xs" aria-hidden="true"><use href="#i-down" /></svg></summary>
+                <div class="sha-body"><small>.deb</small><code>{{debamd_sha}}</code><button class="copy" type="button" data-copy="{{debamd_sha}}" aria-label="{{copy_aria}}"><svg class="i i-xs" aria-hidden="true"><use href="#i-copy" /></svg></button></div>
+                <div class="sha-body"><small>.tar.gz</small><code>{{taramd_sha}}</code><button class="copy" type="button" data-copy="{{taramd_sha}}" aria-label="{{copy_aria}}"><svg class="i i-xs" aria-hidden="true"><use href="#i-copy" /></svg></button></div>
+              </details>
+            </div>
+            <div class="arch-panel" data-arch-panel="arm" hidden>
+              <a class="btn btn-blue btn-m dl-main" href="{{debarm_cn}}" target="_blank" rel="noopener"><svg class="i" aria-hidden="true"><use href="#i-download" /></svg><span>.deb · {{debarm_size}}</span></a>
+              <a class="btn btn-grey btn-m" href="{{tararm_cn}}" target="_blank" rel="noopener"><span>{{lin_tar}} · {{tararm_size}}</span></a>
+              <details class="sha">
+                <summary>SHA-256<svg class="i i-xs" aria-hidden="true"><use href="#i-down" /></svg></summary>
+                <div class="sha-body"><small>.deb</small><code>{{debarm_sha}}</code><button class="copy" type="button" data-copy="{{debarm_sha}}" aria-label="{{copy_aria}}"><svg class="i i-xs" aria-hidden="true"><use href="#i-copy" /></svg></button></div>
+                <div class="sha-body"><small>.tar.gz</small><code>{{tararm_sha}}</code><button class="copy" type="button" data-copy="{{tararm_sha}}" aria-label="{{copy_aria}}"><svg class="i i-xs" aria-hidden="true"><use href="#i-copy" /></svg></button></div>
+              </details>
+            </div>
+            <a class="link-more" href="https://github.com/chanke17/KuroCat/releases/tag/{{tag}}" target="_blank" rel="noopener">{{dl_gh_all}}<svg class="i i-xs" aria-hidden="true"><use href="#i-out" /></svg></a>
+            <p class="dl-note">{{lin_note}}</p>
+          </article>
+        </div>
+
+        <p class="dl-foot">
+          <span>{{dl_trust}}</span>
+          <a class="link-more" href="{{mirror}}" target="_blank" rel="noopener">{{dl_mirror_page}}<svg class="i i-xs" aria-hidden="true"><use href="#i-out" /></svg></a>
+          <a class="link-more" href="https://github.com/chanke17/KuroCat/releases" target="_blank" rel="noopener">{{dl_all}}<svg class="i i-xs" aria-hidden="true"><use href="#i-out" /></svg></a>
+        </p>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="faq" id="faq">
+      <div class="wrap faq-wrap">
+        <div class="faq-side">
+          <h2 class="sec-h">{{faq_h}}</h2>
+          <p class="sec-sub">{{faq_sub}}</p>
+          <a class="link-more" href="https://github.com/chanke17/KuroCat/issues" target="_blank" rel="noopener">{{faq_issue}}<svg class="i i-xs" aria-hidden="true"><use href="#i-out" /></svg></a>
+        </div>
+        <div class="faq-list">
+{{@faq_html}}
+        </div>
+      </div>
+    </section>
+
+    <!-- Closing -->
+    <section class="closing">
+      <div class="wrap closing-in">
+        <svg class="closing-mark" aria-hidden="true"><use href="#i-cat" /></svg>
+        <h2 class="closing-h">{{close_h}}</h2>
+        <p class="sec-sub">{{close_sub}}</p>
+        <div class="closing-actions">
+          <a class="btn btn-blue btn-l" href="#download"><svg class="i" aria-hidden="true"><use href="#i-download" /></svg><span>{{close_dl}}</span></a>
+          <a class="link-more" href="https://github.com/chanke17/KuroCat" target="_blank" rel="noopener">{{close_gh}}<svg class="i i-xs" aria-hidden="true"><use href="#i-out" /></svg></a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot" id="privacy">
+    <div class="wrap">
+      <p class="foot-privacy">{{foot_privacy}}</p>
+      <div class="foot-grid">
+        <div>
+          <h3>{{foot_c1}}</h3>
+          <ul>
+            <li><a href="#download">{{foot_dl}}</a></li>
+            <li><a href="{{mirror}}" target="_blank" rel="noopener">{{foot_mirror}}</a></li>
+            <li><a href="https://github.com/chanke17/KuroCat/releases" target="_blank" rel="noopener">{{foot_releases}}</a></li>
+          </ul>
+        </div>
+        <div>
+          <h3>{{foot_c2}}</h3>
+          <ul>
+            <li><a href="https://workshop.kurocat.cc/#workshop" target="_blank" rel="noopener">{{foot_ws}}</a></li>
+            <li><a href="https://workshop.kurocat.cc/#plaza" target="_blank" rel="noopener">{{foot_plaza}}</a></li>
+            <li><a href="https://workshop.kurocat.cc/#keyboards" target="_blank" rel="noopener">{{foot_kb}}</a></li>
+          </ul>
+        </div>
+        <div>
+          <h3>{{foot_c3}}</h3>
+          <ul>
+            <li><a href="/obs-guide/">{{foot_obs}}</a></li>
+            <li><a href="https://github.com/chanke17/KuroCat/blob/main/docs/skin-format.md" target="_blank" rel="noopener">{{foot_fmt}}</a></li>
+            <li><a href="https://github.com/chanke17/KuroCat/tree/main/mcp" target="_blank" rel="noopener">MCP Server</a></li>
+            <li><a href="/llms.txt">llms.txt</a></li>
+          </ul>
+        </div>
+        <div>
+          <h3>{{foot_c4}}</h3>
+          <ul>
+            <li><a href="https://github.com/chanke17/KuroCat" target="_blank" rel="noopener">GitHub</a></li>
+            <li><a href="https://github.com/chanke17/KuroCat/issues" target="_blank" rel="noopener">{{foot_issue}}</a></li>
+            <li><a href="https://github.com/chanke17/KuroCat/blob/main/LICENSE" target="_blank" rel="noopener">{{foot_license}}</a></li>
+            <li><button type="button" id="openRewardBtn">{{foot_reward}}</button></li>
+          </ul>
+        </div>
+      </div>
+      <div class="foot-bottom">
+        <span>© 2026 KuroCat · MIT License · Built by chanke17 &amp; contributors</span>
+        <a href="{{lang_href}}" hreflang="{{lang_alt}}" lang="{{lang_alt}}">{{lang_label_long}}</a>
+      </div>
+    </div>
+  </footer>
+
+  <dialog class="modal" id="rewardDialog" aria-labelledby="rewardTitle">
+    <div class="modal-head">
+      <h3 id="rewardTitle">{{rw_t}}</h3>
+      <button class="modal-x" type="button" id="closeRewardBtn" aria-label="{{close_aria}}"><svg class="i i-xs" aria-hidden="true"><use href="#i-close" /></svg></button>
+    </div>
+    <p>{{rw_d}}</p>
+    <img src="{{base}}assets/kurocat_reward.jpg" alt="{{rw_alt}}" width="560" height="560" loading="lazy" />
+    <p class="modal-foot">{{rw_f}}</p>
+  </dialog>
+
+  <div class="float-dock" id="floatingPetDock" aria-label="{{dock_aria}}">
+    <div class="float-tools">
+      <button type="button" id="floatNextSkinBtn">{{float_next}}</button>
+      <button type="button" id="floatDockBtn">{{dock_back}}</button>
+    </div>
+    <div class="float-stage" id="petFloatMount"></div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>window.KURO_I18N = {{@i18n_js}};</script>
+  <script src="{{base}}pet/spec.js?v={{build}}"></script>
+  <script src="{{base}}pet/renderer.js?v={{build}}"></script>
+  <script src="{{base}}pet/web-pet.js?v={{build}}"></script>
+  <script src="{{base}}site.js?v={{build}}" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/ScrollTrigger.min.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "version": "1.4.5",
+  "tag": "v1.4.5",
+  "date": "2026-11-25",
+  "mirror": "https://kurocat-download.app.workbuddy.host/?sharecode=JVAABIVZ7L",
+  "mirrorFile": "https://kurocat-download.app.workbuddy.host/downloads/{file}?sharecode=JVAABIVZ7L",
+  "github": "https://github.com/chanke17/KuroCat/releases/download/v1.4.5/{file}",
+  "assets": {
+    "mac":        { "file": "KuroCat-macOS-universal.zip", "bytes": 1042934, "sha256": "c99b6cc588bea70dd9e2bd63137491687b825c430c98dd09a243fc98c9cc44fb" },
+    "win":        { "file": "KuroCat-Windows-x64.exe",     "bytes": 870400,  "sha256": "c029327f25efe9a1c060a2ceb6c063ffecdc3d9c6c8c2fa5ce5e7e9324ba404b" },
+    "linDebAmd":  { "file": "KuroCat-Linux-amd64.deb",     "bytes": 227588,  "sha256": "db00d9c9d79242ca03683288a057acf2f97773705e763ebb7e5bce7a552a4e0c" },
+    "linTarAmd":  { "file": "KuroCat-Linux-x86_64.tar.gz", "bytes": 276885,  "sha256": "bb9f46db412393e72d36d46ef515652cf4acc0cfeca4f47b541b72342e551ef9" },
+    "linDebArm":  { "file": "KuroCat-Linux-arm64.deb",     "bytes": 194616,  "sha256": "d501fc0ff98456b4a8a7889835da8c5045e39714c8720eafda598194447aa341" },
+    "linTarArm":  { "file": "KuroCat-Linux-arm64.tar.gz",  "bytes": 251710,  "sha256": "e76efffc36a6148fa07767ca6f8d05017b3507104751d3bd9ee46e9f6664ac67" }
+  }
+}

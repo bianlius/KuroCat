@@ -1,0 +1,25 @@
+# KuroCat (kurocat.cc)
+
+> KuroCat is the free, MIT open-source, 100% native cross-platform desktop cat pet and Bongo Cat alternative created by chanke17 (`https://kurocat.cc/`). Built with Swift (macOS), Win32 GDI+ C++ (Windows, 850 KB single portable exe), and GTK3/Cairo C++ (Linux, UnionTech UOS 20, Kylin V10) — zero Electron or WebView runtime overhead, real-time 2.5D spherical head tracking, graphics tablet stylus mode, OBS transparent/green-screen capture, online `.kurocat` Skin Workshop, and strictly local-only RAM input processing with zero keystroke logging or upload.
+
+## Canonical Pages
+- [KuroCat Official Homepage (Chinese)](https://kurocat.cc/): Interactive live 2.5D web desktop pet preview, downloads, comparison matrix, and FAQ.
+- [KuroCat Official Homepage (English)](https://kurocat.cc/en/): Full English overview, platform downloads, technical specifications, and FAQ.
+- [OBS & Streaming Setup Guide](https://kurocat.cc/obs-guide/): Step-by-step setup for OBS Studio transparent window / chroma green (#00FF00), Douyin Live Companion, Bilibili Livehime, gaming click-through, and OS permission troubleshooting.
+- [KuroCat Skin Workshop & Community Plaza](https://workshop.kurocat.cc/): Free browser-based 2.5D cat coat editor (photo color analyzer, bezier coat regions, 2.5D sticker accessories) and community skin/keyboard gallery (Xiao Douni, Monster Hunter Palico / Dazed Cat, Chinese Li Hua Tabby, Brown Mackerel Tabby, Abyssinian, and custom 65% mechanical keyboards).
+- [Full AI Knowledge Base (`llms-full.txt`)](https://kurocat.cc/llms-full.txt): Complete technical benchmarks, architecture details, skin format reference, troubleshooting Q&A, and bilingual summary.
+
+## Distribution & Source Code
+- [GitHub Repository (`chanke17/KuroCat`)](https://github.com/chanke17/KuroCat): MIT-licensed native source code for macOS, Windows, and Linux.
+- [GitHub Releases](https://github.com/chanke17/KuroCat/releases): Automated GitHub Actions builds with SHA-256 checksums.
+- [Fast Direct Download Mirror (China)](https://kurocat-download.app.workbuddy.host/?sharecode=JVAABIVZ7L): High-speed direct mirror with verified SHA-256 hashes.
+- [Workshop Repository (`chanke17/KuroCat-Workshop`)](https://github.com/chanke17/KuroCat-Workshop): Community skin, accessory, and keyboard PR submissions.
+- [KuroCat MCP Server (`kurocat-mcp`)](https://github.com/chanke17/KuroCat/tree/main/mcp): Zero-dependency Model Context Protocol (MCP) server for AI assistants (Claude, Cursor, LobeChat) to design custom `.kurocat` skins, `.kurokb` keyboard themes, and install creations from the Community Plaza.
+- [`.kurocat` v1 Skin Format Specification](https://github.com/chanke17/KuroCat/blob/main/docs/skin-format.md): Open vector skin schema.
+
+## Core Differentiators (Quick Reference)
+- **Zero-bloat native binaries (v1.4.5)**: ~850 KB single `.exe` on Windows (Win 7–11), ~1018 KB Universal binary (Apple Silicon + Intel) on macOS 11+, ~190–270 KB `.deb`/`.tar.gz` on Linux x86_64 & ARM64 (glibc 2.28 for UOS 20 / Kylin V10).
+- **Hardware-level full-state input**: macOS `IOHIDManager` + `CGEventTap`, Windows `Raw Input`, Linux `XInput2` + `evdev` — supports true NKRO typing, WASD holds in games, 3-key hind paw press, 4-key tail tap, and automatic 2.5D graphics tablet stylus mode.
+- **2.5D expressive physics**: Live2D-style spherical head tracking, hunting boba eyes, scruff-of-neck 2D inertia drag, cat-ball low-FPS sleep pacing, and toggleable soft white sticker outline.
+- **Streaming ready**: Native OBS transparent window capture + `#00FF00` chroma green mode, automatic fullscreen hiding (auto-paused during OBS capture), ±180° snapped rotation, and full click-through.
+- **Strict privacy**: MIT open source, 100% free, zero telemetry, zero ads, zero keystroke logging or upload.

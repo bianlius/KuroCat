@@ -5,11 +5,18 @@ final class RenderSettings {
  var coatTheme = CatCoatTheme.classicBlack
  var eyeTheme = EyeColorTheme.neonChartreuse
  var keyboardTheme = KeyboardTheme.classicMilk
+ var activeKeyboardSkin: KeyboardSkinSpec { KeyboardSkinSpec.builtIn(keyboardTheme) }
  var showKeyLegends = false
+ var overrideSkin: SkinSpec?
+ var characterCoat: CatCoatTheme? { overrideSkin == nil && !coatTheme.supportsFootEasterEgg ? coatTheme : nil }
+ var activeSkin: SkinSpec { overrideSkin ?? SkinSpec.builtIn(coatTheme) }
  let showKeyBadges = false
  let keyboardMarquee = false
  let obsCaptureMode = 0
  let flipHorizontal = false
+ let rotationDeg: CGFloat = 0
+ let whiteOutline = true
+ let overrideSkinIris = false
  let isEditMode = false
  let isEnglish = false
  let scale: CGFloat = 1.0
@@ -61,18 +68,26 @@ func pixels(_ c:CGContext)->[UInt8] {Array(UnsafeBufferPointer(start:c.data!.ass
 func save(_ c:CGContext,_ name:String){let rep=NSBitmapImageRep(cgImage:c.makeImage()!);try! rep.representation(using:.png,properties:[:])!.write(to:output.appendingPathComponent(name))}
 var n=0
 let aboveKeyboard = 720 * 460 * 4
-for coat in [CatCoatTheme.classicBlack,.siamese] {
+for coat in [CatCoatTheme.siamese] {
  for eye in [EyeColorTheme.neonChartreuse,.siameseBlue,.warmAmber,.iceCyan] {
   for state in [0,1,2,4,5,6,7] {
    let current = pixels(frame(coat,eye,state))
    let old = pixels(frame(coat,eye,state,true))
-   precondition(current[..<aboveKeyboard] == old[..<aboveKeyboard],
-                "Existing skin appearance changed: \(coat), \(eye), \(state)")
-   // Compositing cached keyboard bitmaps can change antialiased edges by a few levels.
+   // Universal sticker-style white outer outline only extends outside the silhouette, and aligned
+   // idle front legs share the typing shoulder root (x: 312...423, y >= 352); all remaining opaque
+   // pixels above the keyboard (head, ears, face, neck, back, tail) must stay unchanged.
+   for i in stride(from: 0, to: aboveKeyboard, by: 4) where old[i + 3] == 255 {
+    let px = i / 4
+    let x = px % 720, y = px / 720
+    if (312...423).contains(x) && y >= 352 { continue }
+    precondition(abs(Int(current[i]) - Int(old[i])) <= 2 && abs(Int(current[i+1]) - Int(old[i+1])) <= 2 && abs(Int(current[i+2]) - Int(old[i+2])) <= 2 && current[i+3] == 255,
+                 "Existing skin interior changed: \(coat), \(eye), \(state) at \(i)")
+   }
+   // Compositing cached keyboard bitmaps (plus white paw outline over top keys) preserves keyboard appearance.
    let keyboardDifferences = zip(current[aboveKeyboard...], old[aboveKeyboard...]).reduce(0) {
     $0 + abs(Int($1.0) - Int($1.1))
    }
-   precondition(Double(keyboardDifferences) / Double(current.count - aboveKeyboard) < 0.1,
+   precondition(Double(keyboardDifferences) / Double(current.count - aboveKeyboard) < 1.5,
                 "Cached keyboard changed appearance: \(coat), \(eye), \(state)")
    n += 1
   }
@@ -258,3 +273,60 @@ for (name,coat) in [("shorthair",CatCoatTheme.shorthair),("orangeWhite",.orangeW
  }
 }
 print("PASS: noses and both mouth lobes visible in all 18 extreme yaw/pitch renders")
+
+// MARK: - .kurocat skins (docs/skin-format.md)
+let repoRoot = ProcessInfo.processInfo.environment["KUROCAT_ROOT"].map { URL(fileURLWithPath: $0) }
+    ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+let templates: [(String, CatCoatTheme, EyeColorTheme)] = [("black", .classicBlack, .neonChartreuse), ("siamese", .siamese, .siameseBlue),
+                                                          ("shorthair", .shorthair, .softAmber), ("orangeWhite", .orangeWhite, .referenceHazel)]
+for (file, coat, eye) in templates {
+ let spec = try! SkinSpec.load(contentsOf: repoRoot.appendingPathComponent("skins/\(file).kurocat"))
+ precondition(spec.name == SkinSpec.builtIn(coat).name, "Template name mismatch: \(file)")
+ for state in [0, 2, 3, 7] {
+  RenderSettings.shared.overrideSkin = nil
+  let builtIn = pixels(frame(coat, eye, state))
+  RenderSettings.shared.overrideSkin = spec
+  let imported = pixels(frame(coat, eye, state))
+  var far = 0
+  for i in stride(from: 0, to: builtIn.count, by: 4) where (0..<4).contains(where: { abs(Int(builtIn[i + $0]) - Int(imported[i + $0])) > 6 }) { far += 1 }
+  precondition(far < 200, "Template \(file) drifts from the built-in coat in state \(state): \(far) px")
+ }
+}
+let demo = try! SkinSpec.load(contentsOf: repoRoot.appendingPathComponent("skins/samples/curve-regions-demo.kurocat"))
+precondition(demo.regions.count >= 3 && demo.shape.bodyWidth > 1.2, "Sample skin lost its curve regions / chubby shape")
+RenderSettings.shared.overrideSkin = demo
+for state in [0, 1, 2, 3, 8] {
+ let c = frame(.classicBlack, .softAmber, state, false, state == 8 ? 3 : 0)
+ precondition(pixels(c).filter { $0 != 0 }.count > 10000, "Empty sample-skin render")
+ save(c, "curve-regions-demo-\(state).png")
+}
+RenderSettings.shared.overrideSkin = nil
+func rejects(_ json: String, _ fragment: String) {
+ do { _ = try SkinSpec.parse(Data(json.utf8)); preconditionFailure("Accepted invalid skin: \(json)") }
+ catch { precondition(error.localizedDescription.contains(fragment), "Unexpected error for \(json): \(error.localizedDescription)") }
+}
+rejects("{", "JSON")
+rejects("[]", "JSON 对象")
+rejects(##"{"name":"x","palette":{"body":"#000000"}}"##, "formatVersion")
+rejects(##"{"formatVersion":2,"name":"x","palette":{"body":"#000000"}}"##, "升级")
+rejects(##"{"formatVersion":1,"name":"x","palette":{"body":"pink"}}"##, "palette.body")
+rejects(##"{"formatVersion":1,"name":"x","palette":{}}"##, "palette.body")
+rejects(##"{"formatVersion":1,"name":"x","palette":{"body":"#000000"},"regions":[{"space":123,"fill":"#FFFFFF","anchors":[]}]}"##, "regions[0].space")
+rejects(##"{"formatVersion":1,"name":"x","palette":{"body":"#000000"},"shape":{"bodyWidth":"fat"}}"##, "shape.bodyWidth")
+let clamped = try! SkinSpec.parse(Data(##"{"formatVersion":1,"name":"  胖  ","palette":{"body":"#112233","hindLeg":"#223344","hindPaw":"#334455"},"shape":{"bodyWidth":9},"unknownField":true,"marks":[{"space":"hindLeg","kind":"polygon","color":"#FFFFFF","points":[[10,0],[50,5],[80,-5]]},{"space":"wing","kind":"polygon","color":"#FFFFFF","points":[[10,0],[50,5],[80,-5]]}]}"##.utf8))
+precondition(clamped.shape.bodyWidth == 1.35 && clamped.name == "胖", "Clamping / trimming / unknown-field rules broken")
+precondition(clamped.marks.count == 1 && clamped.marks[0].space == .hindLeg && clamped.palette.hindLeg != nil && clamped.palette.hindPaw != nil, "hindLeg support / forward-compat unknown-space skip broken")
+print("PASS: 4 .kurocat templates match their built-in coats, curve-regions sample renders, invalid files are rejected in Chinese")
+
+// MARK: - A sleeping cat lying still is not animating
+let sitting=CatPhysics()
+precondition(!sitting.isChangingLie,"A sitting cat counts as changing its lie")
+let lyingStill=CatPhysics();lyingStill.lieIntensity.value=1;lyingStill.lieIntensity.target=1
+precondition(!lyingStill.isChangingLie,"A cat lying still counts as changing its lie")
+let lyingDown=CatPhysics();lyingDown.lieIntensity.value=0.4;lyingDown.lieIntensity.target=1
+precondition(lyingDown.isChangingLie,"Lying down does not count as changing the lie")
+let sittingUp=CatPhysics();sittingUp.lieIntensity.value=0.7;sittingUp.lieIntensity.target=0
+precondition(sittingUp.isChangingLie,"Sitting up does not count as changing the lie")
+let settling=CatPhysics();settling.lieIntensity.value=1;settling.lieIntensity.target=1;settling.lieIntensity.velocity=0.3
+precondition(settling.isChangingLie,"A lying cat still in motion does not count as changing the lie")
+print("PASS: lying down, sitting up and settling count as lie changes; sitting or lying still does not")

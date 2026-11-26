@@ -1,0 +1,38 @@
+{
+  "name": "kurocat-mcp",
+  "version": "1.4.3",
+  "description": "Official Model Context Protocol (MCP) server for KuroCat (kurocat.cc) — let AI assistants design custom .kurocat 2.5D desktop cat skins, create .kurokb mechanical keyboard themes, and browse or install free skins from the KuroCat Community Plaza.",
+  "type": "module",
+  "main": "./server.mjs",
+  "bin": {
+    "kurocat-mcp": "./server.mjs"
+  },
+  "files": [
+    "server.mjs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "kurocat",
+    "desktop-pet",
+    "bongo-cat",
+    "obs-overlay",
+    "cat-skin"
+  ],
+  "homepage": "https://kurocat.cc/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chanke17/KuroCat.git",
+    "directory": "mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/chanke17/KuroCat/issues"
+  },
+  "author": "chanke17",
+  "license": "MIT"
+}

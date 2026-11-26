@@ -4,8 +4,14 @@ import CoreGraphics
 final class RenderSettings {
     static let shared = RenderSettings()
     var coatTheme = CatCoatTheme.pikachu
+    var characterCoat: CatCoatTheme? { coatTheme.supportsFootEasterEgg ? nil : coatTheme }
+    var activeSkin: SkinSpec { SkinSpec.builtIn(coatTheme) }
     var eyeTheme = EyeColorTheme.warmAmber
     var keyboardTheme = KeyboardTheme.classicMilk
+    var activeKeyboardSkin: KeyboardSkinSpec { KeyboardSkinSpec.builtIn(keyboardTheme) }
+    let rotationDeg: CGFloat = 0
+    let whiteOutline = true
+    let overrideSkinIris = false
     var showKeyLegends = true
     let showKeyBadges = false
     let keyboardMarquee = false

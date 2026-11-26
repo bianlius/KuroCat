@@ -1,0 +1,134 @@
+{
+  "identifier": "chanke17-kurocat",
+  "name": "KuroCat MCP",
+  "version": "1.4.3",
+  "author": "chanke17",
+  "authorUrl": "https://github.com/chanke17",
+  "category": "tools",
+  "icon": "https://kurocat.cc/assets/favicon-192.png",
+  "homepage": "https://kurocat.cc/",
+  "description": "Official MCP server for KuroCat (kurocat.cc), the 802 KB native open-source desktop cat pet & Bongo Cat alternative for macOS, Windows, Linux, and UOS. Design custom .kurocat 2.5D skins, author .kurokb mechanical keyboards, and browse or install free creations from the KuroCat Community Plaza.",
+  "tags": [
+    "kurocat",
+    "desktop-pet",
+    "bongo-cat",
+    "obs-overlay",
+    "cat-skin",
+    "creative-tools",
+    "macos",
+    "windows",
+    "linux"
+  ],
+  "localizations": [
+    {
+      "locale": "zh-CN",
+      "name": "KuroCat 桌宠皮肤工坊 MCP",
+      "description": "KuroCat 原生开源桌面萌猫（kurocat.cc）官方 MCP 服务器：让 AI 助手直接为你捏专属 .kurocat 2.5D 猫咪皮肤、定制 .kurokb 机械键盘配色，并实时搜索和一键安装社区广场的免费皮肤与键盘（含小豆泥、怪猎呆猫、狸花猫等）。",
+      "tags": [
+        "KuroCat",
+        "桌面宠物",
+        "Bongo Cat替代",
+        "OBS直播桌宠",
+        "AI捏猫",
+        "皮肤工坊"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "generate_cat_skin",
+      "description": "Design and validate a custom KuroCat v1 desktop cat skin (.kurocat JSON) with breed presets, hex palette, 2.5D shape sliders, and bezier coat regions, with optional 1-click install into KuroCat.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Display name of the cat skin (max 40 chars)." },
+          "author": { "type": "string", "description": "Author display name." },
+          "preset": { "type": "string", "enum": ["black", "siamese", "orange", "calico", "tuxedo", "britishBlue", "ragdoll", "tabby"] },
+          "palette": { "type": "object", "description": "Hex colors (#RRGGBB or #RRGGBBAA) for body, iris, belly, paws, points, etc." },
+          "shape": { "type": "object", "description": "2.5D body proportions (build, bodyWidth, headScale, cheekFullness, earSize, tailLength)." },
+          "install": { "type": "boolean", "description": "Install directly into the local KuroCat skins library." }
+        },
+        "required": ["name"]
+      }
+    },
+    {
+      "name": "generate_keyboard_theme",
+      "description": "Design and validate a custom KuroCat 65% mechanical keyboard & mouse theme (.kurokb JSON) with optional local install.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "author": { "type": "string" },
+          "colors": { "type": "object" },
+          "install": { "type": "boolean" }
+        },
+        "required": ["name", "colors"]
+      }
+    },
+    {
+      "name": "browse_community_plaza",
+      "description": "Live-search free community cat skins, 2.5D accessories, and mechanical keyboards from https://workshop.kurocat.cc/.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "category": { "type": "string", "enum": ["skins", "accessories", "keyboards"] },
+          "query": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "install_community_asset",
+      "description": "Download a free community skin or keyboard by slug from https://workshop.kurocat.cc/ and install it into local KuroCat.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "category": { "type": "string", "enum": ["skins", "keyboards"] },
+          "slug": { "type": "string" }
+        },
+        "required": ["category", "slug"]
+      }
+    },
+    {
+      "name": "list_installed_skins",
+      "description": "List all custom .kurocat cat skins and .kurokb keyboards installed in the local KuroCat app directory.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "validate_kurocat_json",
+      "description": "Strictly validate a .kurocat v1 or .kurokb JSON object against KuroCat's cross-platform parser specification.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string", "enum": ["cat", "keyboard"] },
+          "json": { "type": "object" }
+        },
+        "required": ["kind", "json"]
+      }
+    }
+  ],
+  "resources": [
+    {
+      "uri": "kurocat://spec/skin-format",
+      "name": "KuroCat .kurocat v1 Skin & .kurokb Keyboard Format Specification",
+      "description": "Coordinate system, palette keys, bezier regions, shape bounds, and local install paths."
+    },
+    {
+      "uri": "kurocat://plaza/catalog",
+      "name": "KuroCat Community Plaza Live Catalog",
+      "description": "Live JSON summary of community skins, accessories, and keyboards from https://workshop.kurocat.cc/."
+    }
+  ],
+  "prompts": [
+    {
+      "name": "design_my_cat",
+      "description": "Turn a user's description of their real pet cat into a validated KuroCat .kurocat v1 skin."
+    },
+    {
+      "name": "design_matching_setup",
+      "description": "Design a coordinated KuroCat cat coat (.kurocat) and 65% mechanical keyboard (.kurokb) pair."
+    }
+  ]
+}

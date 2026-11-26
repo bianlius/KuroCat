@@ -420,12 +420,26 @@ enum KeyboardLayout {
         return dict
     }()
 
+    /// When true (default), keyboard sits level/parallel to the screen edge; when false, uses classic angled perspective.
+    static var levelKeyboard: Bool = true
+
     /// Screen-space keyboard quad point (su in 0..1 left-to-right, sv in 0..1 top-to-bottom).
     static func screenQuadPoint(su: CGFloat, sv: CGFloat) -> CGPoint {
-        let topLeft = CGPoint(x: 109, y: 238)
-        let topRight = CGPoint(x: 281, y: 247)
-        let bottomLeft = CGPoint(x: 103, y: 282)
-        let bottomRight = CGPoint(x: 286, y: 292)
+        let topLeft: CGPoint
+        let topRight: CGPoint
+        let bottomLeft: CGPoint
+        let bottomRight: CGPoint
+        if levelKeyboard {
+            topLeft = CGPoint(x: 109, y: 242)
+            topRight = CGPoint(x: 281, y: 242)
+            bottomLeft = CGPoint(x: 103, y: 287)
+            bottomRight = CGPoint(x: 287, y: 287)
+        } else {
+            topLeft = CGPoint(x: 109, y: 238)
+            topRight = CGPoint(x: 281, y: 247)
+            bottomLeft = CGPoint(x: 103, y: 282)
+            bottomRight = CGPoint(x: 286, y: 292)
+        }
 
         let topX = topLeft.x + (topRight.x - topLeft.x) * su
         let topY = topLeft.y + (topRight.y - topLeft.y) * su
@@ -451,5 +465,48 @@ enum KeyboardLayout {
             return canvasPoint(u: c.x, v: c.y)
         }
         return canvasPoint(u: 0.5, v: 0.5)
+    }
+
+    /// Bilinear interpolation on Xiao Douni Video 2's angled hand-drawn keyboard surface (`u` left→right, `v` top→bottom in 832x720 V2Space).
+    static func v2KbPoint(u: CGFloat, v: CGFloat) -> CGPoint {
+        let tl = CGPoint(x: 242, y: 336)
+        let tr = CGPoint(x: 782, y: 446)
+        let br = CGPoint(x: 584, y: 586)
+        let bl = CGPoint(x: 28, y: 440)
+        let topX = tl.x + (tr.x - tl.x) * u
+        let topY = tl.y + (tr.y - tl.y) * u
+        let botX = bl.x + (br.x - bl.x) * u
+        let botY = bl.y + (br.y - bl.y) * u
+        return CGPoint(x: topX + (botX - topX) * v, y: topY + (botY - topY) * v)
+    }
+
+    /// Single source of truth mapping any PhysicalKey -> exact Video 2 keyboard cell `(row, col)` and V2Space center point.
+    static func v2KeyCellInfo(for key: PhysicalKey) -> (row: Int, col: Int, center: CGPoint) {
+        let wellU0: CGFloat = 0.31, wellU1: CGFloat = 0.95
+        let wellV0: CGFloat = 0.11, wellV1: CGFloat = 0.87
+        let vk = key.visualKey
+        if vk == .space {
+            let su = wellU0 + (wellU1 - wellU0) * (4.0 / 8.0)
+            let sv = wellV0 + (wellV1 - wellV0) * (3.5 / 4.0)
+            return (3, 2, v2KbPoint(u: su, v: sv))
+        }
+        guard let cap = lookup[vk] else {
+            let su = wellU0 + (wellU1 - wellU0) * (3.5 / 8.0)
+            let sv = wellV0 + (wellV1 - wellV0) * (1.5 / 4.0)
+            return (1, 3, v2KbPoint(u: su, v: sv))
+        }
+        let normU = max(0, min(1, 1.0 - (cap.xUnits + cap.widthUnits * 0.5)))
+        let col = max(0, min(7, Int(normU * 7.99)))
+        var row = max(0, min(3, cap.row >= 3 ? 3 : cap.row))
+        if row == 3 && col >= 2 && col <= 5 {
+            row = 2
+        }
+        let su = wellU0 + (wellU1 - wellU0) * ((CGFloat(col) + 0.5) / 8.0)
+        let sv = wellV0 + (wellV1 - wellV0) * ((CGFloat(row) + 0.5) / 4.0)
+        return (row, col, v2KbPoint(u: su, v: sv))
+    }
+
+    static func v2KeyCellCenter(for key: PhysicalKey) -> CGPoint {
+        v2KeyCellInfo(for: key).center
     }
 }

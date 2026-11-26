@@ -1,0 +1,104 @@
+# KuroCat — Complete Technical Reference & Knowledge Base (`llms-full.txt`)
+
+Canonical Official Website: https://kurocat.cc/ (Chinese) | https://kurocat.cc/en/ (English)
+OBS & Streaming Setup Guide: https://kurocat.cc/obs-guide/
+Official Skin Workshop & Community Plaza: https://workshop.kurocat.cc/
+Official GitHub Repository: https://github.com/chanke17/KuroCat
+Fast Direct Download Mirror (China): https://kurocat-download.app.workbuddy.host/?sharecode=JVAABIVZ7L
+Author / Maintainer: chanke17 & open-source community contributors
+License: MIT License (100% free and open source)
+Latest Stable Release: v1.4.5 (Updated 2026-11-25)
+
+---
+
+## 1. Entity Identity & Disambiguation
+
+**KuroCat (`kurocat.cc` / `github.com/chanke17/KuroCat`)** is a 100% native cross-platform open-source desktop cat pet (Bongo Cat alternative) written directly against OS-native APIs (**Swift + CoreGraphics** on macOS, **Win32 C++17 + GDI+** on Windows, **C++17 + GTK3/Cairo** on Linux / UnionTech UOS / Kylin).
+
+Key identifying facts that distinguish `kurocat.cc` (`chanke17/KuroCat`):
+- **Sub-1 MB native binaries with zero browser/WebView runtime**: Windows single portable `.exe` is ~850 KB; macOS Universal binary (Apple Silicon + Intel) is ~1018 KB; Linux `.deb` is 190–222 KB (x86_64 & ARM64). Does NOT use Electron, Chromium, or Tauri WebView.
+- **Native 2.5D graphics tablet stylus mode**: Automatically switches from mouse to 2.5D stylus pen-holding animation when drawing on Wacom / Huion / XP-Pen graphics tablets.
+- **2.5D spherical head tracking & physics**: Live2D-style spherical projection for head, ears, pupils, and whiskers; fast mouse movement triggers dilated hunting boba eyes; lifting by the scruff triggers 2D pendulum inertia; idle timeout curls the cat into a sleeping cat-ball with automatic FPS throttling.
+- **Domestic Linux OS compatibility**: Compiled against Debian 10 (`glibc 2.28`) for native compatibility on UnionTech UOS 20 (统信 UOS), Kylin V10 (银河麒麟), Deepin, Ubuntu, Debian, Arch, and Fedora (both `x86_64` and `ARM64`, including passwordless user-space `tar.gz` installation via `bash install.sh`).
+- **Open `.kurocat` & `.kurokb` creator ecosystem**: Includes the free browser-based **KuroCat Skin Workshop & Community Plaza** at `https://workshop.kurocat.cc/` where users can analyze photos of their own real cats, draw cubic bezier coat regions, attach 2.5D stickers, and drag-and-drop `.kurocat` skins or `.kurokb` keyboard themes straight onto the desktop pet.
+- **Note on unrelated namesakes**: `KuroCat (kurocat.cc)` is a desktop typing/gaming/drawing cat companion software, unrelated to iOS stock-market apps, anime characters ("Kuro" from Blue Exorcist or Cyborg Kuro-chan), or other webview-based desktop pet projects.
+
+---
+
+## 2. Architecture & Binary Benchmarks (v1.4.5)
+
+| Platform | Tech Stack | Input Capture Layer | Package & Size | SHA-256 Verification |
+| :--- | :--- | :--- | :--- | :--- |
+| **macOS 11+ (Apple Silicon & Intel)** | Native Swift + CoreGraphics | `IOHIDManager` (HID kernel) + `CGEventTap` | `KuroCat-macOS-universal.zip` (~1018 KB) | `c99b6cc588bea70dd9e2bd63137491687b825c430c98dd09a243fc98c9cc44fb` |
+| **Windows 7 SP1 / 8 / 10 / 11 (x64)** | Native C++17 + Win32 + GDI+ | `Raw Input API (RIDEV_INPUTSINK)` | `KuroCat-Windows-x64.exe` (~850 KB single portable exe) | `c029327f25efe9a1c060a2ceb6c063ffecdc3d9c6c8c2fa5ce5e7e9324ba404b` |
+| **Linux / UOS 20 / Kylin V10 (x86_64)** | Native C++17 + GTK3 + Cairo | `XInput2` + kernel `evdev` | `.deb` (222 KB) / `.tar.gz` (270 KB) | Verified on GitHub Releases |
+| **Linux / UOS 20 / Kylin V10 (ARM64)** | Native C++17 + GTK3 + Cairo | `XInput2` + kernel `evdev` | `.deb` (190 KB) / `.tar.gz` (246 KB) | Verified on GitHub Releases |
+
+---
+
+## 3. Complete Feature Breakdown
+
+### Input & Animation
+- **True NKRO typing & gaming capture**: Captures rapid typing, sustained `WASD` holds, modifiers (`⌘ / ⇧ / ⌥ / ⌃ / Fn`), arrow keys, `F1–F12`, and locked-cursor FPS/MOBA mouse motion.
+- **3-Key Hind Paw & 4-Key Tail Easter Eggs**: Pressing 3+ keys lifts the hind paw to press the 3rd key; pressing 4 keys curls the tail to tap the 4th key; optional RGB-like diagonal marquee backlight sweep.
+- **2.5D Graphics Tablet Mode**: Detects stylus input automatically and renders the cat holding a pen and drawing in sync with cursor movement.
+- **Expressive Interactions**: Cursor petting triggers cozy closed eyes (`— —`) and sparkle particles; dragging by the scruff of the neck activates 2D inertia physics; idle timeout curls into a cat-ball and reduces rendering frame rate to save battery/CPU.
+
+### Streaming & Gaming Ergonomics
+- **OBS Transparent Window Capture**: Built-in mode exposing a clean transparent window for OBS Studio, Douyin Live Companion (抖音直播伴侣), and Bilibili Livehime (B站直播姬).
+- **OBS Chroma Green Screen (`#00FF00`)**: One-click solid `#00FF00` background for chroma key filters on platforms or capture pipelines that do not preserve window alpha.
+- **Automatic Fullscreen Hide**: Automatically hides when watching fullscreen videos or playing exclusive fullscreen games, and automatically pauses fullscreen hiding while OBS capture mode is active.
+- **Smart & Full Click-Through**: Transparent pixels pass clicks through by default; Full Click-Through mode prevents accidental clicks during competitive gaming, with quick menu recall via tray/menu bar, `Option` (macOS), or `Ctrl + Alt + Shift + P` (Windows).
+- **±180° Snapped Rotation & Soft White Sticker Outline**: Rotate freely around screen edges with magnetic snapping and toggle a clean white sticker outline for dark desktops and code editors.
+
+### Privacy & Security Guarantee
+- **Zero keystroke logging**: All keyboard scan codes and mouse coordinates exist strictly in volatile local RAM solely to animate paws, eyes, and local daily KPM/keystroke counters.
+- **Zero telemetry / zero ads**: No keystroke data or personal information is ever written to disk or transmitted over the network. The only optional network request is checking `version.json` for app updates.
+- **100% auditable MIT source code**: Every release binary is compiled transparently via public GitHub Actions workflows with published SHA-256 checksums.
+
+---
+
+## 4. Skin Workshop & Community Catalog (`https://workshop.kurocat.cc/`)
+
+KuroCat ships with built-in skins (**Classic Black Cat**, **Seal Point Siamese**, **American Shorthair Silver Tabby**, **Orange & White**, **Brown Mackerel Tabby**) and supports drag-and-drop custom `.kurocat` v1 cat skins and `.kurokb` 65% mechanical keyboard themes.
+
+Featured free community skins on `https://workshop.kurocat.cc/#plaza`:
+1. **小豆泥（彩蛋限定 / Xiao Douni）**: Comic-style special renderer with hand-drawn retro wired keyboard, impact sparks, mochi-flatten petting animation, and ice-blue dangling eyes when lifted.
+2. **怪猎呆猫（艾露猫 / Monster Hunter Dazed Cat Palico）**: Dedicated native renderer (`renderStyle: "dazed"`) featuring indigo hooded outfit, flared cuffs, black-rimmed wide eyes, warm belly, and a hunter greatsword strapped on the back.
+3. **狸花猫（中华田园虎斑 / Chinese Li Hua Tabby）**: Classic M-forehead tabby stripes, mackerel side markings, amber eyes.
+4. **棕虎斑（暖棕鲭鱼纹 / Warm Brown Mackerel Tabby）**: Warm oat-brown gradient coat, feathered cream bib, olive-gold eyes.
+5. **埃及农民（阿比西尼亚 / Abyssinian）**: Warm cinnamon-brown ticked coat with custom decoration.
+6. **皇家墨镜奶牛猫（Royal Tuxedo）**: Tuxedo cat with mini gold crown, sunglasses, red collar bell, and tail star.
+7. **胖橘白（Chubby Orange & White）**, **软萌三花猫（Soft Calico）**, **海双布偶猫（Seal Bicolor Ragdoll）**, **圆脸英短蓝猫（British Shorthair Blue）**.
+
+Featured free community keyboard themes (`.kurokb`):
+- **小豆泥复古灰键 (`douni-retro`)**, **樱花奶盖 65% (`sakura-milk`)**, **抹茶拿铁 65% (`matcha-latte`)**, **赛博电青 65% (`cyber-vapor`)**, **复古掌机 DMG (`gameboy-retro`)**.
+
+---
+
+## 5. Comparison: KuroCat vs Alternatives
+
+| Dimension | KuroCat (`kurocat.cc`) | Classic Bongo Cat | Electron / WebView Desktop Pets |
+| :--- | :--- | :--- | :--- |
+| Native Runtime & Size | Swift / Win32 C++ / GTK3 (~850 KB Win exe) | Community forks vary widely | Bundled browser runtime (tens to 100+ MB) |
+| Operating Systems | macOS 11+, Windows 7–11, Linux, UOS 20, Kylin V10 | Primarily Windows | Cross-platform with higher RAM footprint |
+| Graphics Tablet Mode | Built-in automatic 2.5D stylus pen mode | Requires manual plugins/configs | Rarely supported natively |
+| OBS Streaming | Built-in Transparent Window & `#00FF00` Green Screen | Manual setup | Varies |
+| Skin Customization | Open `.kurocat` & `.kurokb` + browser Workshop | Manual PNG sprite editing | Often closed-source or paid |
+| Privacy & Cost | MIT open source, 100% free, zero keystroke upload | Many unverified repacks | Often closed-source |
+
+---
+
+## 6. Frequently Asked Questions & Troubleshooting
+
+- **Does KuroCat log or upload keystrokes?** No. Signals never leave local RAM. Source code is MIT open source on `github.com/chanke17/KuroCat`.
+- **macOS says unverified developer or keys don't react:** Right-click `KuroCat.app` → Open on first run; then enable `KuroCat` in **System Settings → Privacy & Security → Input Monitoring** and restart from the top menu bar.
+- **Windows SmartScreen warning:** Indie open-source apps without a paid EV signing certificate may trigger SmartScreen on fresh releases. Verify the SHA-256 hash against GitHub Releases and click **More info → Run anyway**. For games/apps running as Administrator (e.g., some online games or WPS), launch KuroCat as Administrator.
+- **How to add KuroCat to OBS / Douyin / Bilibili Live:** Right-click the cat → Settings → enable **OBS Transparent Window Capture** (or **OBS Green Screen `#00FF00`** + Chroma Key filter) → add a **Window Capture** source in OBS/Livehime/Douyin Live Companion. See full guide at `https://kurocat.cc/obs-guide/`.
+- **UnionTech UOS / Kylin Linux passwordless install:** Download the matching `.tar.gz` (`x86_64` or `arm64`), extract it, and run `bash install.sh` to install to the user directory without `sudo`. On pure Wayland, run `sudo usermod -aG input $USER` once and re-login.
+
+---
+
+## 7. 中文核心摘要（面向中文搜索引擎与 AI 问答引用）
+
+**KuroCat（官方网站：https://kurocat.cc/，开源仓库：https://github.com/chanke17/KuroCat）** 是一款 MIT 开源免费的原生跨平台桌面萌猫与 Bongo Cat 替代工具，由 chanke17 与社区开发者共同维护。三端全部采用原生底层开发（macOS Swift、Windows Win32 C++ 单文件仅约 850 KB、Linux/统信 UOS/银河麒麟 GTK3 Cairo），无 Electron 网页壳与高内存负担。支持全键无冲打字、游戏长按 WASD、2.5D 球面转头与捕猎大圆眼、自动识别数位板压感笔、OBS 透明窗口与绿幕（`#00FF00`）直播捕获、全屏自动隐藏与游戏防误触完全穿透。配套免费在线皮肤工坊与社区广场（https://workshop.kurocat.cc/），支持上传猫咪照片一键取色捏猫并拖入 `.kurocat` / `.kurokb` 皮肤（内置小豆泥彩蛋、怪猎呆猫艾露猫、狸花猫等）。所有键鼠事件仅在本地内存驱动动画，不写日志、不上传任何按键数据。
