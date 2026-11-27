@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CatPhysics.hpp"
+#include "CharacterDragPose.hpp"
 #include "ResourceIds.h"
 #include <objidl.h>
 #include <gdiplus.h>
@@ -8,6 +9,8 @@
 
 class DoraemonRenderer {
 public:
+    static constexpr Pt ScruffGrip{kurorig::SeatX, kurorig::DoraemonCanvasGripY};
+
     static std::unique_ptr<DoraemonRenderer> load() {
         auto skin = std::make_unique<DoraemonRenderer>();
         Sprite mask;
@@ -29,18 +32,29 @@ public:
         pose.head.Invert();
         Gdiplus::PointF bodyPoint(point.x, point.y);
         pose.body.TransformPoints(&bodyPoint, 1);
-        pose.figure.TransformPoints(&bodyPoint, 1);
         Gdiplus::PointF facePoint = bodyPoint;
+        pose.figure.TransformPoints(&facePoint, 1);
         pose.head.TransformPoints(&facePoint, 1);
 
         float headX = (facePoint.X - 64.0f) / 39.0f;
         float headY = (facePoint.Y - 46.0f) / 34.0f;
         if (headX * headX + headY * headY <= 1.0f) return CatHitZone::Head;
 
+        auto torso = pose.drag.torso(86);
+        torso.Invert();
+        torso.TransformPoints(&bodyPoint, 1);
+        pose.figure.TransformPoints(&bodyPoint, 1);
         float bodyX = (bodyPoint.X - 64.0f) / 44.0f;
         float bodyY = (bodyPoint.Y - 105.0f) / 24.0f;
         if (bodyX * bodyX + bodyY * bodyY <= 1.0f) return CatHitZone::Body;
         return CatHitZone::None;
+    }
+
+    static CharacterDragPose::Hands dragHands(const CatPhysics& physics) {
+        Pose pose(physics);
+        const auto wrists = pose.wrists(physics);
+        return {CharacterDragPose::map({wrists.left.point.X, wrists.left.point.Y}, pose.body),
+                CharacterDragPose::map({wrists.right.point.X, wrists.right.point.Y}, pose.body)};
     }
 
     void draw(Gdiplus::Graphics& g, const CatPhysics& physics, Gdiplus::Color eyeColor,
@@ -53,15 +67,15 @@ public:
         GraphicsState behindKeyboard = g.Save();
         g.SetClip(&keyboardDeck, CombineModeExclude);
         g.MultiplyTransform(&pose.body);
+        const auto torso = pose.drag.torso(86);
+        g.MultiplyTransform(&torso);
         g.MultiplyTransform(&pose.figure);
         body.draw(g);
         rightFoot.draw(g);
         g.Restore(behindKeyboard);
 
         g.MultiplyTransform(&pose.body);
-        pose.body.Invert();
-        const Wrist left = wristPose(physics.leftPaw.point(), CatPhysics::LeftPawRest, {27.5f, 98.1f}, pose.body);
-        const Wrist right = wristPose(physics.rightPaw.point(), CatPhysics::RightPawRest, {100.5f, 98.1f}, pose.body);
+        const auto [left, right] = pose.wrists(physics);
         drawSleeve(g, pose.figure, left, true);
         drawSleeve(g, pose.figure, right, false);
         hand.draw(g, left.point.X - 99.0f, left.point.Y - 107.2f);
@@ -113,15 +127,23 @@ private:
         }
     };
 
+    struct Wrist {
+        Gdiplus::PointF point;
+        float reach;
+    };
+
+    struct Wrists { Wrist left, right; };
+
     struct Pose {
         Gdiplus::Matrix body;
         Gdiplus::Matrix figure{ArtworkScale, 0, 0, ArtworkScale,
                                64.0f * (1 - ArtworkScale), 128.0f * (1 - ArtworkScale)};
         Gdiplus::Matrix head;
+        CharacterDragPose drag;
 
-        explicit Pose(const CatPhysics& physics) {
+        explicit Pose(const CatPhysics& physics) : drag(physics) {
             body.Translate(CatPhysics::SeatAnchor.x + physics.bodyShiftX.value, CatPhysics::SeatAnchor.y + 24.0f);
-            body.Rotate(physics.bodyTilt.value * 0.65f * RadToDeg);
+            body.Rotate(physics.bodyTilt.value * 0.65f * (1 - drag.lift) * RadToDeg);
             body.Scale(BodyScale, BodyScale);
             body.Translate(-64.0f, -128.0f);
 
@@ -130,12 +152,24 @@ private:
             head.Translate(64.0f + yaw * 1.4f, 78.0f + physics.headPitch.value * 0.85f + breath);
             head.Rotate(physics.headTilt.value * 0.45f * RadToDeg);
             head.Translate(-64.0f, -78.0f);
+            const Pt grip = CharacterDragPose::map({64, kurorig::DoraemonArtGripY}, head);
+            drag.suspend(body, CharacterDragPose::map(grip, figure), ScruffGrip);
         }
-    };
 
-    struct Wrist {
-        Gdiplus::PointF point;
-        float reach;
+        Wrists wrists(const CatPhysics& physics) const {
+            Gdiplus::Matrix inverse;
+            inverse.Multiply(&body);
+            inverse.Invert();
+            const Wrist left = wristPose(physics.leftPaw.point(), CatPhysics::LeftPawRest, {27.5f, 98.1f}, inverse);
+            const Wrist right = wristPose(physics.rightPaw.point(), CatPhysics::RightPawRest, {100.5f, 98.1f}, inverse);
+            const auto suspend = [&](Wrist wrist, float side, float y) -> Wrist {
+                const Pt hanging{64 + side * kurorig::DoraemonWristSpread, y};
+                const Pt point = drag.wrist({wrist.point.X, wrist.point.Y}, hanging);
+                return {{point.x, point.y}, wrist.reach * (1 - drag.lift)};
+            };
+            return {suspend(left, -1, kurorig::DoraemonWristY),
+                    suspend(right, 1, kurorig::DoraemonKeyboardWristY)};
+        }
     };
 
     Sprite head;

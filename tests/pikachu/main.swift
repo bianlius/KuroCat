@@ -149,3 +149,77 @@ for state in 0..<6 {
 }
 try save(sheet.makeImage()!, "preview_pikachu.png")
 print("PASS: Pikachu renders ten poses including scruff drag and dizzy; mouse/keyboard arms preserve the face; petting closes eyes; gaze tracks the pointer; head/body/transparent hit testing is correct")
+
+precondition(DoraemonRenderer.bundled != nil, "The test bundle is missing Doraemon artwork")
+for coat in [CatCoatTheme.doraemon, .pikachu] {
+    RenderSettings.shared.coatTheme = coat
+    RenderSettings.shared.eyeTheme = coat == .doraemon ? .iceCyan : .warmAmber
+    let name = coat == .doraemon ? "doraemon" : "pikachu"
+    let isPikachu = coat == .pikachu
+    let hands = coat == .doraemon ? DoraemonRenderer.dragHands : PikachuRenderer.dragHands
+    let grip = CatRenderer.scruffPinchCanvasPoint(skin: RenderSettings.shared.activeSkin, flipped: false, rotationDeg: 0)
+    let rotated = CatRenderer.scruffPinchCanvasPoint(skin: RenderSettings.shared.activeSkin, flipped: true, rotationDeg: 25)
+    let unrotated = CatRenderer.canvasPointToCatSpace(rotated, flipped: true, rotationDeg: 25)
+    precondition(hypot(unrotated.x - grip.x, unrotated.y - grip.y) < 0.001, "The grip moved after rotation and mirroring")
+
+    let pose = CatPhysics()
+    let seated = render(pose)
+    try save(seated, "\(name)-seated.png")
+    let restingHands = hands(pose)
+    pose.scruffDrag.value = 0.001
+    let liftStart = hands(pose)
+    precondition(hypot(liftStart.left.x - restingHands.left.x, liftStart.left.y - restingHands.left.y) < 0.01)
+    precondition(hypot(liftStart.right.x - restingHands.right.x, liftStart.right.y - restingHands.right.y) < 0.01)
+    pose.scruffDrag.value = 1
+    pose.bodySquash.value = 1.16
+    pose.headTilt.value = 0.4
+    for swing in [-1.0, 0.0, 1.0] as [CGFloat] {
+        pose.scruffSwing.value = swing
+        pose.scruffTailSwing.value = swing
+        precondition(CatRenderer.hitTest(point: grip, physics: pose, showPermissionPill: false) == .head,
+                     "\(name) swings away from its drag grip")
+        let wrists = hands(pose)
+        precondition(wrists.left.x < wrists.right.x && wrists.left.y > grip.y && wrists.right.y > grip.y)
+        let drag = CharacterDragPose(pose)
+        let keyboard = drag.keyboardTransform(to: wrists.right, isPikachu: isPikachu)
+        let carried = CharacterDragPose.keyboardGrip(isPikachu: isPikachu).applying(keyboard)
+        precondition(hypot(carried.x - wrists.right.x, carried.y - wrists.right.y) < 0.001,
+                     "The carried keyboard must meet the right wrist")
+        pose.isTabletActive = true
+        let tablet = drag.pointerTransform(physics: pose, to: wrists.left)
+        pose.isTabletActive = false
+        let mouse = drag.pointerTransform(physics: pose, to: wrists.left)
+        for transform in [keyboard, tablet, mouse] {
+            precondition(abs(hypot(transform.a, transform.b) - 1) < 0.001
+                         && abs(hypot(transform.c, transform.d) - 1) < 0.001, "Carrying a device changed its size")
+        }
+        for level in [true, false] {
+            KeyboardLayout.levelKeyboard = level
+            for vertical in [-1.0, 0.0, 1.0] as [CGFloat] {
+                pose.scruffSwingY.value = vertical
+                for tilt in [-0.5, 0.5] as [CGFloat] {
+                    pose.headTilt.value = tilt
+                    let transform = CharacterDragPose(pose).keyboardTransform(to: hands(pose).right, isPikachu: isPikachu)
+                    for (u, v) in [(-0.016, -0.04), (1.016, -0.04), (-0.016, 1.04), (1.016, 1.04)] as [(CGFloat, CGFloat)] {
+                        var corner = KeyboardLayout.screenQuadPoint(su: u, sv: v)
+                        if v > 1 { corner.y += 7.5 } // Include the chassis and its shadow.
+                        let point = corner.applying(transform)
+                        precondition(CGRect(origin: .zero, size: CatPhysics.canvasSize).contains(point),
+                                     "\(name) keyboard outside the canvas at \(point), swing \(swing), vertical \(vertical), level \(level), tilt \(tilt)")
+                    }
+                }
+            }
+        }
+        KeyboardLayout.levelKeyboard = true
+        pose.scruffSwingY.value = 0
+        pose.headTilt.value = 0.4
+        let hanging = render(pose)
+        precondition(crop(seated, CGRect(x: 140, y: 40, width: 440, height: 530)) !=
+                     crop(hanging, CGRect(x: 140, y: 40, width: 440, height: 530)), "Missing hanging pose")
+        try save(hanging, "\(name)-drag-\(Int(swing)).png")
+    }
+    pose.scruffSwing.value = 0
+    pose.isTabletActive = true
+    try save(render(pose), "\(name)-drag-tablet.png")
+}
+print("PASS: Doraemon and Pikachu keep device size and keyboard clearance as they lift and swing")

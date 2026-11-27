@@ -24,6 +24,19 @@ constexpr float PlaneDepth = 27.5f;
 constexpr float LieSquash = 0.42f;
 constexpr float SquashWiden = 0.55f;
 constexpr float LieWiden = 0.03f;
+constexpr float KeyboardGripV = 0.52f;
+constexpr float DoraemonArtGripY = 18.0f;
+constexpr float DoraemonCanvasGripY = 39.0f;
+constexpr float DoraemonWristSpread = 30.0f;
+constexpr float DoraemonWristY = 121.0f;
+constexpr float DoraemonKeyboardGripU = 0.73f;
+constexpr float DoraemonKeyboardWristY = 111.0f;
+constexpr float PikachuArtGripY = 50.0f;
+constexpr float PikachuCanvasGripY = 69.0f;
+constexpr float PikachuWristSpread = 25.0f;
+constexpr float PikachuWristY = 216.0f;
+constexpr float PikachuKeyboardGripU = 0.54f;
+constexpr float PikachuKeyboardWristY = 200.0f;
 // </rig:generated>
 
 struct Vec2 { float x, y; };

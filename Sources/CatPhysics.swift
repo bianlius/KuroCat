@@ -2483,5 +2483,18 @@ enum KuroRig {
     static let lieSquash: CGFloat = 0.42
     static let squashWiden: CGFloat = 0.55
     static let lieWiden: CGFloat = 0.03
+    static let keyboardGripV: CGFloat = 0.52
+    static let doraemonArtGripY: CGFloat = 18.0
+    static let doraemonCanvasGripY: CGFloat = 39.0
+    static let doraemonWristSpread: CGFloat = 30.0
+    static let doraemonWristY: CGFloat = 121.0
+    static let doraemonKeyboardGripU: CGFloat = 0.73
+    static let doraemonKeyboardWristY: CGFloat = 111.0
+    static let pikachuArtGripY: CGFloat = 50.0
+    static let pikachuCanvasGripY: CGFloat = 69.0
+    static let pikachuWristSpread: CGFloat = 25.0
+    static let pikachuWristY: CGFloat = 216.0
+    static let pikachuKeyboardGripU: CGFloat = 0.54
+    static let pikachuKeyboardWristY: CGFloat = 200.0
 }
 // </rig:generated>

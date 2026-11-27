@@ -35,15 +35,20 @@ struct DoraemonRenderer {
         .translatedBy(x: -64, y: -128)
     private static let shoulderMaskTransform = figureArtwork.translatedBy(x: 0, y: 128).scaledBy(x: 1, y: -1)
     private static let shoulderMaskBounds = CGRect(x: -64, y: -64, width: 256, height: 256)
+    static let scruffGrip = CGPoint(x: KuroRig.seatX, y: KuroRig.doraemonCanvasGripY)
 
     private struct Pose {
         let body: CGAffineTransform
         let head: CGAffineTransform
+        let torso: CGAffineTransform
+        let drag: CharacterDragPose
 
         init(_ physics: CatPhysics) {
             let seat = CatPhysics.seatAnchor
-            body = CGAffineTransform(translationX: seat.x + physics.bodyShiftX.value, y: seat.y + 24)
-                .rotated(by: physics.bodyTilt.value * 0.65)
+            let drag = CharacterDragPose(physics)
+            self.drag = drag
+            let seated = CGAffineTransform(translationX: seat.x + physics.bodyShiftX.value, y: seat.y + 24)
+                .rotated(by: physics.bodyTilt.value * 0.65 * (1 - drag.lift))
                 .scaledBy(x: bodyScale, y: bodyScale)
                 .translatedBy(x: -64, y: -128)
 
@@ -53,14 +58,40 @@ struct DoraemonRenderer {
                                      y: 78 + physics.headPitch.value * 0.85 + breath)
                 .rotated(by: physics.headTilt.value * 0.45)
                 .translatedBy(x: -64, y: -78)
+            let grip = CGPoint(x: 64, y: KuroRig.doraemonArtGripY).applying(head).applying(figureArtwork)
+            body = drag.hangingBody(seated, localGrip: grip, canvasGrip: scruffGrip)
+            torso = drag.torso(shoulderY: 86)
         }
+
+        func wrists(_ physics: CatPhysics) -> (left: Wrist, right: Wrist) {
+            let toSprite = body.inverted()
+            let left = wristPose(paw: physics.leftPaw.point, rest: CatPhysics.leftPawRest,
+                                 idleHand: CGPoint(x: 27.5, y: 98.1), toSprite: toSprite)
+            let right = wristPose(paw: physics.rightPaw.point, rest: CatPhysics.rightPawRest,
+                                  idleHand: CGPoint(x: 100.5, y: 98.1), toSprite: toSprite)
+            func suspend(_ wrist: Wrist, side: CGFloat, y: CGFloat) -> Wrist {
+                let hanging = CGPoint(x: 64 + side * KuroRig.doraemonWristSpread, y: y)
+                return (drag.wrist(wrist.point, hanging: hanging), wrist.reach * (1 - drag.lift))
+            }
+            return (suspend(left, side: -1, y: KuroRig.doraemonWristY),
+                    suspend(right, side: 1, y: KuroRig.doraemonKeyboardWristY))
+        }
+    }
+
+    private typealias Wrist = (point: CGPoint, reach: CGFloat)
+
+    static func dragHands(_ physics: CatPhysics) -> (left: CGPoint, right: CGPoint) {
+        let pose = Pose(physics)
+        let hands = pose.wrists(physics)
+        return (hands.left.point.applying(pose.body), hands.right.point.applying(pose.body))
     }
 
     static func hitTest(point: CGPoint, physics: CatPhysics) -> CatHitZone? {
         let pose = Pose(physics)
-        let body = point.applying(pose.body.inverted()).applying(figureArtwork.inverted())
-        let face = body.applying(pose.head.inverted())
+        let local = point.applying(pose.body.inverted())
+        let face = local.applying(figureArtwork.inverted()).applying(pose.head.inverted())
         if pow((face.x - 64) / 39, 2) + pow((face.y - 46) / 34, 2) <= 1 { return .head }
+        let body = local.applying(pose.torso.inverted()).applying(figureArtwork.inverted())
         if pow((body.x - 64) / 44, 2) + pow((body.y - 105) / 24, 2) <= 1 { return .body }
         return nil
     }
@@ -79,15 +110,13 @@ struct DoraemonRenderer {
         visibleBody.addPath(keyboardDeck, transform: toSprite)
         ctx.addPath(visibleBody)
         ctx.clip(using: .evenOdd)
+        ctx.concatenate(pose.torso)
         ctx.concatenate(Self.figureArtwork)
         drawSprite(body, in: ctx)
         drawSprite(rightFoot, in: ctx)
         ctx.restoreGState()
 
-        let leftHand = wristPose(paw: physics.leftPaw.point, rest: CatPhysics.leftPawRest,
-                                 idleHand: CGPoint(x: 27.5, y: 98.1), toSprite: toSprite)
-        let rightHand = wristPose(paw: physics.rightPaw.point, rest: CatPhysics.rightPawRest,
-                                  idleHand: CGPoint(x: 100.5, y: 98.1), toSprite: toSprite)
+        let (leftHand, rightHand) = pose.wrists(physics)
         drawSleeve(in: ctx, wrist: leftHand.point, reach: leftHand.reach, isLeft: true)
         drawSleeve(in: ctx, wrist: rightHand.point, reach: rightHand.reach, isLeft: false)
         drawHand(in: ctx, at: leftHand.point)
@@ -100,8 +129,8 @@ struct DoraemonRenderer {
         ctx.restoreGState()
     }
 
-    private func wristPose(paw: CGPoint, rest: CGPoint, idleHand: CGPoint,
-                           toSprite: CGAffineTransform) -> (point: CGPoint, reach: CGFloat) {
+    private static func wristPose(paw: CGPoint, rest: CGPoint, idleHand: CGPoint,
+                                  toSprite: CGAffineTransform) -> Wrist {
         let distance = hypot(paw.x - rest.x, paw.y - rest.y)
         let progress = min(1, distance / 10)
         let reach = progress * progress * (3 - 2 * progress)

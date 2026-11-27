@@ -26,7 +26,7 @@ def load():
     rig = json.loads((ROOT / 'shared/rig.json').read_text(encoding='utf-8'))
     ht, hs, bd = rig['headTurn'], rig['headSurface'], rig['bodyDeform']
     # Order matters only for readability of the generated blocks.
-    return [
+    consts = [
         ('canvasWidth', rig['canvas']['width']), ('canvasHeight', rig['canvas']['height']),
         ('seatX', rig['seatAnchor']['x']), ('seatY', rig['seatAnchor']['y']),
         ('yawPerUnit', ht['yawPerUnit']), ('pitchPerUnit', ht['pitchPerUnit']),
@@ -35,6 +35,13 @@ def load():
         ('domeDepth', hs['domeDepth']), ('planeDepth', hs['planeDepth']),
         ('lieSquash', bd['lieSquash']), ('squashWiden', bd['squashWiden']), ('lieWiden', bd['lieWiden']),
     ]
+    character_drag = rig['characterDrag']
+    desktop = [
+        (part + key[0].upper() + key[1:], value)
+        for part in ('keyboardGrip', 'doraemon', 'pikachu')
+        for key, value in character_drag[part].items()
+    ]
+    return consts, desktop
 
 
 def num(v):
@@ -109,11 +116,11 @@ def main():
         if args.workshop:
             raise SystemExit(f'{workshop}/renderer.js not found')
         workshop = None
-    consts = load()
+    consts, desktop = load()
     stale = []
     for path, make, insert in targets(workshop):
         text = path.read_text(encoding='utf-8')
-        new = apply(text, make(consts), insert)
+        new = apply(text, make(consts if make is js_block else consts + desktop), insert)
         if new != text:
             stale.append(path)
             if not args.check:

@@ -14,27 +14,31 @@ enum PikachuRenderer {
     private static let artworkScale: CGFloat = 1.04
     // Move the seated figure to the back edge of the keyboard deck.
     private static let seatOffsetY: CGFloat = 16
+    static let scruffGrip = CGPoint(x: KuroRig.seatX, y: KuroRig.pikachuCanvasGripY)
 
     private struct Pose {
         let body: CGAffineTransform
         let head: CGAffineTransform
         let leftEar: CGAffineTransform
         let rightEar: CGAffineTransform
+        let torso: CGAffineTransform
+        let drag: CharacterDragPose
 
         init(_ physics: CatPhysics) {
-            let scruff = clamp(physics.scruffDrag.value)
+            let drag = CharacterDragPose(physics)
+            self.drag = drag
             let lie = clamp(physics.lieIntensity.value)
             let dizzy = clamp(physics.dizzyIntensity.value)
             let squash = 1 + (physics.bodySquash.value - 1) * 0.35
             var bodyTransform = CGAffineTransform(translationX: CatPhysics.seatAnchor.x + physics.bodyShiftX.value,
-                                     y: CatPhysics.seatAnchor.y + seatOffsetY - scruff * 20 + lie * 6 + dizzy * 6)
-                .rotated(by: physics.bodyTilt.value * 0.45 + physics.scruffSwing.value * 0.5 - dizzy * 0.18)
+                                     y: CatPhysics.seatAnchor.y + seatOffsetY + lie * 6 + dizzy * 6)
+                .rotated(by: (physics.bodyTilt.value * 0.45 - dizzy * 0.18) * (1 - drag.lift))
                 .scaledBy(x: artworkScale, y: artworkScale * squash)
                 .translatedBy(x: -96, y: -207)
             // Turn and look without changing the character's size as the pointer crosses the screen.
             let headTransform = CGAffineTransform(translationX: 96 + physics.headYaw.value * 1.8,
                                      y: 94 + physics.headPitch.value * 1.1 + physics.breathingOffset * 0.3)
-                .rotated(by: physics.headTilt.value * 0.4)
+                .rotated(by: physics.headTilt.value * 0.4 * (1 - drag.lift * 0.75))
                 .translatedBy(x: -96, y: -94)
             let earAngle = -clamp(physics.earFold.value) * 0.18 + sin(physics.time * 3.1) * 0.012
             let leftEarTransform = CGAffineTransform(translationX: 59, y: 58)
@@ -42,7 +46,9 @@ enum PikachuRenderer {
                 .translatedBy(x: -59, y: -58)
             let mirror = CGAffineTransform(translationX: 192, y: 0).scaledBy(x: -1, y: 1)
             let rightEarTransform = leftEarTransform.concatenating(mirror)
-            // Long ears need more room than cat ears when the scruff pose stretches the body.
+            let grip = point(96, KuroRig.pikachuArtGripY).applying(headTransform)
+            bodyTransform = drag.hangingBody(bodyTransform, localGrip: grip, canvasGrip: scruffGrip, maxAngle: 0.12)
+            // Reserve room for the long ears as the character lifts and swings.
             let top = [leftEarTip.applying(leftEarTransform), leftEarTip.applying(rightEarTransform), point(96, 44)]
                 .map { $0.applying(headTransform).applying(bodyTransform).y }.min()!
             bodyTransform.ty += max(0, 6 - top)
@@ -50,7 +56,25 @@ enum PikachuRenderer {
             head = headTransform
             leftEar = leftEarTransform
             rightEar = rightEarTransform
+            torso = drag.torso(shoulderY: 146)
         }
+
+        func wrists(_ physics: CatPhysics) -> (left: CGPoint, right: CGPoint) {
+            let inverse = body.inverted()
+            let left = wrist(physics.leftPaw.point, rest: CatPhysics.leftPawRest, idle: point(84, 201), inverse: inverse)
+            let right = wrist(physics.rightPaw.point, rest: CatPhysics.rightPawRest, idle: point(108, 201), inverse: inverse)
+            let spread = KuroRig.pikachuWristSpread
+            return (
+                drag.wrist(left, hanging: point(96 - spread, KuroRig.pikachuWristY)),
+                drag.wrist(right, hanging: point(96 + spread, KuroRig.pikachuKeyboardWristY))
+            )
+        }
+    }
+
+    static func dragHands(_ physics: CatPhysics) -> (left: CGPoint, right: CGPoint) {
+        let pose = Pose(physics)
+        let hands = pose.wrists(physics)
+        return (hands.left.applying(pose.body), hands.right.applying(pose.body))
     }
 
     static func hitTest(point: CGPoint, physics: CatPhysics) -> CatHitZone? {
@@ -60,8 +84,9 @@ enum PikachuRenderer {
         if headPath.contains(head)
             || leftEarPath.contains(head.applying(pose.leftEar.inverted()))
             || leftEarPath.contains(head.applying(pose.rightEar.inverted())) { return .head }
-        if bodyPath.contains(body) || leftFootPath.contains(body)
-            || leftFootPath.contains(body.applying(CGAffineTransform(translationX: 192, y: 0).scaledBy(x: -1, y: 1))) {
+        let torso = body.applying(pose.torso.inverted())
+        if bodyPath.contains(torso) || leftFootPath.contains(torso)
+            || leftFootPath.contains(torso.applying(CGAffineTransform(translationX: 192, y: 0).scaledBy(x: -1, y: 1))) {
             return .body
         }
         return nil
@@ -75,7 +100,8 @@ enum PikachuRenderer {
         ctx.setLineJoin(.round)
         ctx.setLineCap(.round)
 
-        if physics.tailTyping.value < 0.5 { drawTail(in: ctx, physics: physics, toFigure: inverse) }
+        let tailInFront = physics.tailTyping.value >= 0.5 && pose.drag.lift < 0.5
+        if !tailInFront { drawTail(in: ctx, physics: physics, toFigure: inverse, lift: pose.drag.lift) }
 
         // The body and seated feet stay behind the keyboard; reaching forepaws are in front.
         ctx.saveGState()
@@ -84,6 +110,7 @@ enum PikachuRenderer {
         visible.addPath(keyboardDeck, transform: inverse)
         ctx.addPath(visible)
         ctx.clip(using: .evenOdd)
+        ctx.concatenate(pose.torso)
         fillBodyCoat(bodyPath, in: ctx)
         stroke(bodyPath, in: ctx)
         let chinShadow = path {
@@ -99,11 +126,8 @@ enum PikachuRenderer {
         drawFoot(in: ctx, mirrored: true)
         ctx.restoreGState()
 
-        if physics.tailTyping.value >= 0.5 { drawTail(in: ctx, physics: physics, toFigure: inverse) }
-        let left = wrist(physics.leftPaw.point, rest: CatPhysics.leftPawRest,
-                         idle: point(84, 201), inverse: inverse)
-        let right = wrist(physics.rightPaw.point, rest: CatPhysics.rightPawRest,
-                          idle: point(108, 201), inverse: inverse)
+        if tailInFront { drawTail(in: ctx, physics: physics, toFigure: inverse, lift: pose.drag.lift) }
+        let (left, right) = pose.wrists(physics)
         drawArm(in: ctx, shoulder: point(71, 148), wrist: left, side: -1)
         drawArm(in: ctx, shoulder: point(121, 148), wrist: right, side: 1)
 
@@ -248,7 +272,7 @@ enum PikachuRenderer {
         ctx.restoreGState()
     }
 
-    private static func drawTail(in ctx: CGContext, physics: CatPhysics, toFigure: CGAffineTransform) {
+    private static func drawTail(in ctx: CGContext, physics: CatPhysics, toFigure: CGAffineTransform, lift: CGFloat) {
         let artworkRoot = point(141, 146)
         let root = point(artworkRoot.x, artworkRoot.y + 5)
         let active = clamp(physics.tailTyping.value)
@@ -257,9 +281,10 @@ enum PikachuRenderer {
         var delta = atan2(target.y - root.y, target.x - root.x) - baseAngle
         if delta > .pi { delta -= .pi * 2 }
         if delta < -.pi { delta += .pi * 2 }
-        let angle = sin(physics.tailPhase) * 0.045 * (1 - active) + delta * active
+        let seatedAngle = sin(physics.tailPhase) * 0.045 * (1 - active) + delta * active
+        let angle = seatedAngle * (1 - lift) + (1.75 - physics.scruffTailSwing.value * 0.22) * lift
         let reach = min(1.15, max(0.5, hypot(target.x - root.x, target.y - root.y) / 123))
-        let scale = 1 + (reach - 1) * active
+        let scale = (1 + (reach - 1) * active) * (1 - lift) + 0.74 * lift
         // Convert the downward canvas offset to figure space for tilted poses.
         let offset = CGSize(width: 0, height: 4).applying(toFigure)
         ctx.saveGState()

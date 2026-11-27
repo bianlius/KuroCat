@@ -9,6 +9,66 @@ enum CatHitZone {
     case permissionPill
 }
 
+struct CharacterDragPose {
+    let lift: CGFloat
+    private let swing: CGFloat
+    private let verticalSwing: CGFloat
+
+    init(_ physics: CatPhysics) {
+        let progress = max(0, min(1, physics.scruffDrag.value))
+        lift = progress * progress * (3 - 2 * progress)
+        swing = max(-1, min(1, physics.scruffSwing.value))
+        verticalSwing = max(-1, min(1, physics.scruffSwingY.value))
+    }
+
+    func hangingBody(_ body: CGAffineTransform, localGrip: CGPoint, canvasGrip: CGPoint,
+                     maxAngle: CGFloat = 0.23) -> CGAffineTransform {
+        let grip = localGrip.applying(body)
+        let target = interpolate(grip, canvasGrip)
+        let suspension = CGAffineTransform(translationX: target.x, y: target.y)
+            .rotated(by: swing * lift * maxAngle)
+            .translatedBy(x: -grip.x, y: -grip.y)
+        return body.concatenating(suspension)
+    }
+
+    func torso(shoulderY: CGFloat) -> CGAffineTransform {
+        let stretch = 1 + lift * (0.12 + verticalSwing * 0.04)
+        return CGAffineTransform(a: 1, b: 0, c: 0, d: stretch, tx: 0, ty: shoulderY * (1 - stretch))
+    }
+
+    func wrist(_ seated: CGPoint, hanging: CGPoint) -> CGPoint {
+        interpolate(seated, CGPoint(x: hanging.x - swing * 4, y: hanging.y + verticalSwing * 4))
+    }
+
+    static func keyboardGrip(isPikachu: Bool) -> CGPoint {
+        let u = isPikachu ? KuroRig.pikachuKeyboardGripU : KuroRig.doraemonKeyboardGripU
+        return KeyboardLayout.screenQuadPoint(su: u, sv: KuroRig.keyboardGripV)
+    }
+
+    func keyboardTransform(to hand: CGPoint, isPikachu: Bool) -> CGAffineTransform {
+        device(from: Self.keyboardGrip(isPikachu: isPikachu), to: hand, angle: 0.26)
+    }
+
+    func pointerTransform(physics: CatPhysics, to hand: CGPoint) -> CGAffineTransform {
+        let desk = physics.isTabletActive
+            ? CatPhysics.tabletQuadPoint(u: 0.62, v: 0.12)
+            : CGPoint(x: CatPhysics.mouseBaseCenter.x + physics.mouseOffset.point.x,
+                      y: CatPhysics.mouseBaseCenter.y + physics.mouseOffset.point.y - 10)
+        return device(from: desk, to: hand, angle: 0.54)
+    }
+
+    private func device(from desk: CGPoint, to grip: CGPoint, angle: CGFloat) -> CGAffineTransform {
+        let target = interpolate(desk, grip)
+        return CGAffineTransform(translationX: target.x, y: target.y)
+            .rotated(by: (angle + swing * 0.23) * lift)
+            .translatedBy(x: -desk.x, y: -desk.y)
+    }
+
+    private func interpolate(_ start: CGPoint, _ end: CGPoint) -> CGPoint {
+        CGPoint(x: start.x + (end.x - start.x) * lift, y: start.y + (end.y - start.y) * lift)
+    }
+}
+
 enum CatRenderer {
     static let catBlack = NSColor(calibratedRed: 0.085, green: 0.085, blue: 0.095, alpha: 1.0)
     private static let blackOutlineWidth: CGFloat = 1.8
@@ -142,15 +202,18 @@ enum CatRenderer {
 
     /// Inverse of `canvasPointToCatSpace`, returning the lifted scruff-pinch anchor in 360x320 canvas coordinates.
     static func scruffPinchCanvasPoint(skin: SkinSpec, flipped: Bool, rotationDeg: CGFloat) -> CGPoint {
-        var x: CGFloat = 180.0
-        var y: CGFloat
-        if skin.renderStyle == .beagle {
-            y = 58.0
-        } else {
+        let grip: CGPoint
+        switch skin.id {
+        case "builtin:doraemon" where skin.builtIn && DoraemonRenderer.bundled != nil: grip = DoraemonRenderer.scruffGrip
+        case "builtin:pikachu" where skin.builtIn: grip = PikachuRenderer.scruffGrip
+        case _ where skin.renderStyle == .beagle: grip = CGPoint(x: 180, y: 58)
+        default:
             let hs = skin.shape.headScale
             let bd = build(skin)
-            y = 82.0 + (hs - 1.0) * 6.0 + bd.crownBaseY * hs - 6.2 * hs
+            grip = CGPoint(x: 180, y: 82 + (hs - 1) * 6 + bd.crownBaseY * hs - 6.2 * hs)
         }
+        var x = grip.x
+        var y = grip.y
         if flipped {
             x = CatPhysics.canvasSize.width - x
         }
@@ -474,20 +537,36 @@ enum CatRenderer {
             return
         }
 
+        let characterDrag = CharacterDragPose(physics)
+        let hands = characterDrag.lift > 0
+            ? (isPikachu ? PikachuRenderer.dragHands(physics) : doraemon.map { _ in DoraemonRenderer.dragHands(physics) })
+            : nil
         // 1. Mini White Mouse OR Graphics Tablet (when drawing tablet/stylus is connected!)
+        if let hands {
+            ctx.saveGState()
+            ctx.concatenate(characterDrag.pointerTransform(physics: physics, to: hands.left))
+        }
         if physics.isTabletActive {
             drawTablet(in: ctx, physics: physics, theme: settings.keyboardTheme, eyeTheme: settings.eyeTheme)
-            if !physics.leftPawOnMouse || scruff > 0.25 || dizzy > 0.35 || lie > 0.45 {
+            if hands != nil || !physics.leftPawOnMouse || scruff > 0.25 || dizzy > 0.35 || lie > 0.45 {
                 drawParkedStylus(in: ctx, theme: settings.keyboardTheme, eyeTheme: settings.eyeTheme)
             }
         } else {
             drawMouse(in: ctx, physics: physics, kbSkin: kbSkin)
         }
+        if hands != nil { ctx.restoreGState() }
 
         // 2. Mini Angled 65% Mechanical Keyboard + Dynamic Keycap Glow
-        let keyboardDeck = drawKeyboard(in: ctx, physics: physics, kbSkin: kbSkin,
+        var keyboardTransform = hands.map { characterDrag.keyboardTransform(to: $0.right, isPikachu: isPikachu) } ?? .identity
+        if hands != nil {
+            ctx.saveGState()
+            ctx.concatenate(keyboardTransform)
+        }
+        let deck = drawKeyboard(in: ctx, physics: physics, kbSkin: kbSkin,
                                         eyeTheme: settings.eyeTheme, showLegends: settings.showKeyLegends,
                                         flipped: flipped, marquee: settings.keyboardMarquee)
+        if hands != nil { ctx.restoreGState() }
+        let keyboardDeck = keyboardTransform.isIdentity ? deck : (deck.copy(using: &keyboardTransform) ?? deck)
         if isPikachu {
             PikachuRenderer.draw(in: ctx, physics: physics, eyeColor: settings.eyeTheme.primaryColor.cgColor,
                                  keyboardDeck: keyboardDeck)

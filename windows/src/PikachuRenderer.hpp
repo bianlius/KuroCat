@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CatPhysics.hpp"
+#include "CharacterDragPose.hpp"
 #include <objidl.h>
 #include <gdiplus.h>
 #include <array>
@@ -69,21 +70,21 @@ class PikachuRenderer {
 
     struct Pose {
         Matrix body, head, leftEar, rightEar;
+        CharacterDragPose drag;
 
-        explicit Pose(const CatPhysics& physics) {
-            const float scruff = clamp01(physics.scruffDrag.value);
+        explicit Pose(const CatPhysics& physics) : drag(physics) {
             const float lie = clamp01(physics.lieIntensity.value);
             const float dizzy = clamp01(physics.dizzyIntensity.value);
             const float squash = 1 + (physics.bodySquash.value - 1) * 0.35f;
             body.Translate(CatPhysics::SeatAnchor.x + physics.bodyShiftX.value,
-                           CatPhysics::SeatAnchor.y + 16 - scruff * 20 + lie * 6 + dizzy * 6);
-            body.Rotate((physics.bodyTilt.value * 0.45f + physics.scruffSwing.value * 0.5f - dizzy * 0.18f) * RadToDeg);
+                           CatPhysics::SeatAnchor.y + 16 + lie * 6 + dizzy * 6);
+            body.Rotate((physics.bodyTilt.value * 0.45f - dizzy * 0.18f) * (1 - drag.lift) * RadToDeg);
             body.Scale(ArtworkScale, ArtworkScale * squash);
             body.Translate(-96, -207);
 
             head.Translate(96 + physics.headYaw.value * 1.8f,
                            94 + physics.headPitch.value * 1.1f + physics.breathingOffset() * 0.3f);
-            head.Rotate(physics.headTilt.value * 0.4f * RadToDeg);
+            head.Rotate(physics.headTilt.value * 0.4f * (1 - drag.lift * 0.75f) * RadToDeg);
             head.Translate(-96, -94);
 
             const float earAngle = -clamp01(physics.earFold.value) * 0.18f + std::sin(physics.time * 3.1f) * 0.012f;
@@ -94,6 +95,8 @@ class PikachuRenderer {
             rightEar.Multiply(&leftEar);
             rightEar.Multiply(&mirror, Gdiplus::MatrixOrderAppend);
 
+            const Pt grip = transformed({96, kurorig::PikachuArtGripY}, head);
+            drag.suspend(body, grip, ScruffGrip, 0.12f);
             const auto canvasY = [&](Pt point) {
                 return transformed(transformed(point, head), body).y;
             };
@@ -104,11 +107,21 @@ class PikachuRenderer {
             });
             body.Translate(0, std::max(0.0f, 6 - top), Gdiplus::MatrixOrderAppend);
         }
+
+        CharacterDragPose::Hands wrists(const CatPhysics& physics, const Matrix& inverse) const {
+            const Pt left = wrist(physics.leftPaw.point(), CatPhysics::LeftPawRest, {84, 201}, inverse);
+            const Pt right = wrist(physics.rightPaw.point(), CatPhysics::RightPawRest, {108, 201}, inverse);
+            const float spread = kurorig::PikachuWristSpread;
+            return {drag.wrist(left, {96 - spread, kurorig::PikachuWristY}),
+                    drag.wrist(right, {96 + spread, kurorig::PikachuKeyboardWristY})};
+        }
     };
 
     Contour head, body, foot, toes, ear, earTipInk, tail, tailRoot, chinShadow, nose, mouth;
 
 public:
+    static constexpr Pt ScruffGrip{kurorig::SeatX, kurorig::PikachuCanvasGripY};
+
     PikachuRenderer() {
         head.move({96, 44});
         head.cubic({72, 43}, {57, 51}, {52, 66});
@@ -185,11 +198,23 @@ public:
             || contains(ear.path, transformed(headPoint, pose.rightEar))) {
             return CatHitZone::Head;
         }
-        if (contains(body.path, bodyPoint) || contains(foot.path, bodyPoint)
-            || contains(foot.path, {192 - bodyPoint.x, bodyPoint.y})) {
+        auto torso = pose.drag.torso(146);
+        torso.Invert();
+        const Pt torsoPoint = transformed(bodyPoint, torso);
+        if (contains(body.path, torsoPoint) || contains(foot.path, torsoPoint)
+            || contains(foot.path, {192 - torsoPoint.x, torsoPoint.y})) {
             return CatHitZone::Body;
         }
         return CatHitZone::None;
+    }
+
+    static CharacterDragPose::Hands dragHands(const CatPhysics& physics) {
+        Pose pose(physics);
+        Matrix inverse;
+        inverse.Multiply(&pose.body);
+        inverse.Invert();
+        const auto wrists = pose.wrists(physics, inverse);
+        return {transformed(wrists.left, pose.body), transformed(wrists.right, pose.body)};
     }
 
     void draw(Graphics& g, const CatPhysics& physics, Color eyeColor, const GraphicsPath& keyboardDeck) const {
@@ -200,8 +225,8 @@ public:
 
         const auto scene = g.Save();
         g.MultiplyTransform(&pose.body);
-        const bool tailTyping = physics.tailTyping.value >= 0.5f;
-        if (!tailTyping) drawTail(g, physics, inverse);
+        const bool tailInFront = physics.tailTyping.value >= 0.5f && pose.drag.lift < 0.5f;
+        if (!tailInFront) drawTail(g, physics, inverse, pose.drag.lift);
 
         // The body's seat and feet sit behind the keyboard, while reaching paws overlap it.
         const auto behindKeyboard = g.Save();
@@ -209,6 +234,8 @@ public:
         deckInFigure.AddPath(&keyboardDeck, FALSE);
         deckInFigure.Transform(&inverse);
         g.SetClip(&deckInFigure, Gdiplus::CombineModeExclude);
+        const auto torso = pose.drag.torso(146);
+        g.MultiplyTransform(&torso);
         fillBody(g, body.path);
         stroke(g, body.path);
         fillSolid(g, chinShadow.path, Color(0xffe5a329));
@@ -216,9 +243,8 @@ public:
         drawFoot(g, true);
         g.Restore(behindKeyboard);
 
-        if (tailTyping) drawTail(g, physics, inverse);
-        const Pt left = wrist(physics.leftPaw.point(), CatPhysics::LeftPawRest, {84, 201}, inverse);
-        const Pt right = wrist(physics.rightPaw.point(), CatPhysics::RightPawRest, {108, 201}, inverse);
+        if (tailInFront) drawTail(g, physics, inverse, pose.drag.lift);
+        const auto [left, right] = pose.wrists(physics, inverse);
         drawArm(g, {71, 148}, left, -1);
         drawArm(g, {121, 148}, right, 1);
 
@@ -384,15 +410,16 @@ private:
         g.Restore(state);
     }
 
-    void drawTail(Graphics& g, const CatPhysics& physics, const Matrix& inverse) const {
+    void drawTail(Graphics& g, const CatPhysics& physics, const Matrix& inverse, float lift) const {
         const Pt root{141, 151};
         const Pt target = transformed(physics.tailTip.point(), inverse);
         const float active = clamp01(physics.tailTyping.value);
         const float baseAngle = std::atan2(-103.0f, 67.0f);
         const float delta = std::remainder(std::atan2(target.y - root.y, target.x - root.x) - baseAngle, 2 * Pi);
-        const float angle = std::sin(physics.tailPhase) * 0.045f * (1 - active) + delta * active;
+        const float seatedAngle = std::sin(physics.tailPhase) * 0.045f * (1 - active) + delta * active;
+        const float angle = seatedAngle * (1 - lift) + (1.75f - physics.scruffTailSwing.value * 0.22f) * lift;
         const float reach = std::clamp(std::hypot(target.x - root.x, target.y - root.y) / 123, 0.5f, 1.15f);
-        const float scale = 1 + (reach - 1) * active;
+        const float scale = (1 + (reach - 1) * active) * (1 - lift) + 0.74f * lift;
         PointF offset{0, 4};
         inverse.TransformVectors(&offset);
 

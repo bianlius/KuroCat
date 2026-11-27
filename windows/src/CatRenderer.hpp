@@ -314,7 +314,11 @@ public:
 
     static Pt scruffPinchCanvasPoint(const SkinSpec& skin, bool flipped, float rotationDeg) {
         Pt pt = { 180.0f, 58.0f };
-        if (skin.renderStyle != SkinRenderStyle::Beagle) {
+        if (skin.builtIn && skin.id == "builtin:doraemon") {
+            pt = DoraemonRenderer::ScruffGrip;
+        } else if (skin.builtIn && skin.id == "builtin:pikachu") {
+            pt = PikachuRenderer::ScruffGrip;
+        } else if (skin.renderStyle != SkinRenderStyle::Beagle) {
             float hs = skin.shape.headScale;
             const auto& bd = buildOf(skin);
             pt.y = 82.0f + (hs - 1.0f) * 6.0f + bd.crownBaseY * hs - 6.2f * hs;
@@ -446,20 +450,43 @@ public:
             126.0f + buildOf(skin).headLift + sharedSleepHead + physics.headOffsetY.value + physics.headPitch.value * 4.8f + breath * 1.1f - scruff * 22.0f + lieS * 60.0f
         };
 
+        const CharacterDragPose characterDrag(physics);
+        const bool carrying = characterDrag.lift > 0 && (doraemon || pikachu);
+        CharacterDragPose::Hands hands{};
+        GraphicsState pointerState{};
+        if (carrying) {
+            hands = pikachu ? PikachuRenderer::dragHands(physics) : DoraemonRenderer::dragHands(physics);
+            const auto transform = characterDrag.pointerTransform(physics, hands.left);
+            pointerState = g.Save();
+            g.MultiplyTransform(&transform);
+        }
         // 1. Mini White Mouse OR Graphics Tablet (when drawing tablet/stylus is connected!)
         if (physics.isTabletActive) {
             drawTablet(g, physics, settings.keyboardTheme, settings.eyeTheme);
-            if (!physics.leftPawOnMouse || scruff > 0.25f || dizzy > 0.35f || lie > 0.45f) {
+            if (carrying || !physics.leftPawOnMouse || scruff > 0.25f || dizzy > 0.35f || lie > 0.45f) {
                 drawParkedStylus(g, settings.keyboardTheme, settings.eyeTheme);
             }
         } else {
             drawMouse(g, physics, kbSkin);
         }
+        if (carrying) g.Restore(pointerState);
 
         // 2. Mini 65% Mechanical Keyboard (facing cat) + Backlit Glow
         GraphicsPath keyboardDeck;
-        drawKeyboard(g, physics, kbSkin, settings.eyeTheme, settings.showKeyLegends,
-                     settings.keyboardMarquee, settings.flipHorizontal, &keyboardDeck);
+        const auto drawDeck = [&] {
+            drawKeyboard(g, physics, kbSkin, settings.eyeTheme, settings.showKeyLegends,
+                         settings.keyboardMarquee, settings.flipHorizontal, &keyboardDeck);
+        };
+        if (carrying) {
+            const auto keyboardTransform = characterDrag.keyboardTransform(hands.right, pikachu != nullptr);
+            const auto keyboardState = g.Save();
+            g.MultiplyTransform(&keyboardTransform);
+            drawDeck();
+            g.Restore(keyboardState);
+            keyboardDeck.Transform(&keyboardTransform);
+        } else {
+            drawDeck();
+        }
 
         if (doraemon || pikachu) {
             const Color eyeColor = eyePrimary(settings.eyeTheme);
