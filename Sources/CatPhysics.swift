@@ -10,6 +10,21 @@ enum KeyboardTheme: String, CaseIterable {
     case retroCream = "复古奶油灰"
 }
 
+/// How the keyboard RGB backlight travels across the deck.
+enum KeyboardMarqueeMode: Int, CaseIterable {
+    /// Cycle through every mode automatically (default).
+    case all = 3
+    /// Single band sweeping left → right, then restarting at the left edge (original behaviour).
+    case sweep = 0
+    /// Seamless circular wrap: the trail leaving the right edge re-enters from the left.
+    case loop = 1
+    /// A ring expanding outward from the deck centre towards both edges.
+    case ripple = 2
+
+    /// Modes used by the `.all` auto-rotation (order matters for the cycle).
+    static let rotation: [KeyboardMarqueeMode] = [.sweep, .loop, .ripple]
+}
+
 enum CatCoatTheme: String, CaseIterable {
     case classicBlack = "经典小黑猫 (原版)"
     case siamese = "挖煤暹罗猫"
@@ -77,6 +92,9 @@ final class CatSettings {
     var keyboardMarquee: Bool {
         didSet { UserDefaults.standard.set(keyboardMarquee, forKey: "KuroCat.KeyboardMarquee") }
     }
+    var marqueeMode: KeyboardMarqueeMode {
+        didSet { UserDefaults.standard.set(marqueeMode.rawValue, forKey: "KuroCat.MarqueeMode") }
+    }
     var levelKeyboard: Bool {
         didSet {
             UserDefaults.standard.set(levelKeyboard, forKey: "KuroCat.LevelKeyboard")
@@ -94,6 +112,10 @@ final class CatSettings {
     /// Automatically hide the pet when another app enters fullscreen
     var autoHideFullscreen: Bool {
         didSet { UserDefaults.standard.set(autoHideFullscreen, forKey: "KuroCat.AutoHideFullscreen") }
+    }
+    /// Automatically put on headphones with gentle rhythm & music notes when audio/video/music is playing
+    var autoHeadphonesOnMusic: Bool {
+        didSet { UserDefaults.standard.set(autoHeadphonesOnMusic, forKey: "KuroCat.AutoHeadphonesOnMusic") }
     }
     /// 0 = Auto-detect graphics tablet/stylus, 1 = Always show tablet, 2 = Always show mouse
     var tabletMode: Int {
@@ -213,11 +235,13 @@ final class CatSettings {
         footEasterEgg = d.object(forKey: "KuroCat.FootEasterEgg") as? Bool ?? true
         tailEasterEgg = d.object(forKey: "KuroCat.TailEasterEgg") as? Bool ?? true
         keyboardMarquee = d.object(forKey: "KuroCat.KeyboardMarquee") as? Bool ?? true
+        marqueeMode = KeyboardMarqueeMode(rawValue: d.object(forKey: "KuroCat.MarqueeMode") as? Int ?? 3) ?? .all
         levelKeyboard = d.object(forKey: "KuroCat.LevelKeyboard") as? Bool ?? true
         KeyboardLayout.levelKeyboard = levelKeyboard
         obsCaptureMode = d.object(forKey: "KuroCat.OBSCaptureMode") as? Int ?? 0
         obsHideDesktop = d.object(forKey: "KuroCat.OBSHideDesktop") as? Bool ?? false
         autoHideFullscreen = d.object(forKey: "KuroCat.AutoHideFullscreen") as? Bool ?? false
+        autoHeadphonesOnMusic = d.object(forKey: "KuroCat.AutoHeadphonesOnMusic") as? Bool ?? true
         tabletMode = d.object(forKey: "KuroCat.TabletMode") as? Int ?? 0
         flipHorizontal = d.object(forKey: "KuroCat.FlipHorizontal") as? Bool ?? false
         rotationDeg = CGFloat(d.object(forKey: "KuroCat.RotationDeg") as? Double ?? 0.0)
@@ -350,6 +374,19 @@ final class CatPhysics {
     // Keyboard marquee: normalized position (0..1) of the light head, plus its speed boost.
     var marqueePhase: CGFloat = 0
     var marqueeBoost = Spring1D(0)
+    /// Elapsed seconds inside the current mode while `.all` auto-rotation is active.
+    private var marqueeRotationElapsed: Double = 0
+    /// Seconds each marquee mode stays on screen before the next one takes over.
+    private let marqueeRotationPeriod: Double = 10
+    private(set) var marqueeRotationIndex: Int = 0
+
+    /// The mode actually rendered this frame: the user's pick, or the rotating one when `.all`.
+    var effectiveMarqueeMode: KeyboardMarqueeMode {
+        let selected = CatSettings.shared.marqueeMode
+        guard selected == .all else { return selected }
+        let rotation = KeyboardMarqueeMode.rotation
+        return rotation[marqueeRotationIndex % rotation.count]
+    }
 
     var bodyShiftX = Spring1D(0)
     var bodyTilt = Spring1D(0)       // radians
@@ -468,6 +505,9 @@ final class CatPhysics {
 
     // Sleepy idle state
     private(set) var sleepiness: CGFloat = 0 // 0 = awake, 1 = napping
+    var isMusicPlaying: Bool = false
+    private(set) var musicIntensity: CGFloat = 0 // 0 = no headphones, 1 = wearing headphones & vibing
+    private(set) var musicPhase: CGFloat = 0     // continuous beat phase (~112 BPM)
     private(set) var yawnAmount: CGFloat = 0 // 0 = closed, 1 = peak wide yawn before sleep
     private var yawnTimer: CGFloat = 0
     private(set) var isYawning = false
@@ -619,7 +659,7 @@ final class CatPhysics {
         sleepiness = 0
         if isDown {
             let now = CACurrentMediaTime()
-            if CatSettings.shared.activeSkin.renderStyle == .douni {
+            if CatSettings.shared.activeSkin.renderStyle == .douni || CatSettings.shared.activeSkin.renderStyle == .beagle {
                 douniSlapTimer = 0
                 douniLeftRaise.target = 0
                 douniRightRaise.target = 0
@@ -1117,9 +1157,15 @@ final class CatPhysics {
 
         // Subtle mini-mouse movement driven by global cursor velocity
         let flipped = CatSettings.shared.flipHorizontal
+        let rotationDeg = CatSettings.shared.rotationDeg
+        let hasRot = abs(rotationDeg) > 0.05
+        let rotRad = hasRot ? (rotationDeg * .pi / 180.0) : 0.0
         let flipSign: CGFloat = flipped ? -1.0 : 1.0
-        let targetMouseDx = max(-5.5, min(5.5, curMouseVel.dx * 0.0045 * flipSign))
-        let targetMouseDy = max(-4.5, min(4.5, -curMouseVel.dy * 0.0045))
+        let velDownY = -curMouseVel.dy
+        let rotVelDx = hasRot ? (curMouseVel.dx * cos(-rotRad) - velDownY * sin(-rotRad)) : curMouseVel.dx
+        let rotVelDy = hasRot ? (curMouseVel.dx * sin(-rotRad) + velDownY * cos(-rotRad)) : velDownY
+        let targetMouseDx = max(-5.5, min(5.5, rotVelDx * 0.0045 * flipSign))
+        let targetMouseDy = max(-4.5, min(4.5, rotVelDy * 0.0045))
         mouseOffset.target = CGPoint(x: targetMouseDx, y: targetMouseDy)
         mouseOffset.step(dt: dt, stiffness: 120, damping: 16)
         mousePressLeft.step(dt: dt, stiffness: 400, damping: 24)
@@ -1157,6 +1203,7 @@ final class CatPhysics {
 
         let isDouniTyping = activeSkin.typingStyle == .douni
         let isDouniSkin = activeSkin.renderStyle == .douni
+        let usesDouniDesk = isDouniSkin || activeSkin.renderStyle == .beagle
         if isDouniTyping {
             douniSlapTimer = max(0, douniSlapTimer - dt)
             let leftHeldNow = activeKeys.contains { $0.prefersLeftPaw }
@@ -1188,10 +1235,12 @@ final class CatPhysics {
             douniRightRaise.target = 0
             kbImpactY.value = 0; kbImpactTilt.value = 0; kbSparkTimer = 0
         }
-        if isDouniSkin {
-            // Deliberate petting threshold (avoids abrupt hijacking on 1px cursor brush or fast hunting whip!) + silky Disney ease spring
-            let wantsLoaf = !isScruffDragging && scruff < 0.08 && dizzy < 0.15 && hunt < 0.22
-                && (petHeadIntensity > 0.30 || isCurrentlyPetting || petBodyIntensity > 0.35 || sleepiness > 0.48)
+        if usesDouniDesk {
+            // Deliberate petting threshold for Douni; Beagle stays at desk showing Pose 2 happy blush on pet and curls to Pose 4 on sleep
+            let wantsLoaf = isDouniSkin
+                ? (!isScruffDragging && scruff < 0.08 && dizzy < 0.15 && hunt < 0.22
+                    && (petHeadIntensity > 0.30 || isCurrentlyPetting || petBodyIntensity > 0.35 || sleepiness > 0.48))
+                : (!isScruffDragging && scruff < 0.08 && (lieIntensity.value > 0.45 || sleepiness > 0.48))
             douniLoafBlend.target = wantsLoaf ? 1.0 : 0.0
             douniLoafBlend.step(dt: dt, stiffness: 52, damping: 13.5)
             let typingNow = (douniSlapTimer > 0.04 || !activeKeys.isEmpty)
@@ -1243,7 +1292,7 @@ final class CatPhysics {
         } else if (mouseRecent || (isTabletActive && engine.isPenInProximity)) && sleepiness < 0.3 {
             if isTabletActive {
                 let nib = tabletNib.point
-                leftPaw.target = isDouniSkin ? CGPoint(x: nib.x + 6, y: nib.y - 7) : stylusPawGrip
+                leftPaw.target = usesDouniDesk ? CGPoint(x: nib.x + 6, y: nib.y - 7) : stylusPawGrip
                 if curLeftMouse || engine.penPressure > 0.02 {
                     let last = tabletTrail.last?.point
                     if last == nil || hypot(nib.x - last!.x, nib.y - last!.y) >= 1.8 {
@@ -1310,6 +1359,14 @@ final class CatPhysics {
             marqueeBoost.target = max(0, min(1, (CGFloat(activeKeys.count) - 2) / 5))
             marqueeBoost.step(dt: dt, stiffness: 90, damping: 20)
             marqueePhase = (marqueePhase + dt * (0.42 + 0.40 * marqueeBoost.value)).truncatingRemainder(dividingBy: 1.0)
+            // `.all` rotates sweep → loop → ripple so every mode gets its turn.
+            if CatSettings.shared.marqueeMode == .all {
+                marqueeRotationElapsed += dt
+                if marqueeRotationElapsed >= marqueeRotationPeriod {
+                    marqueeRotationElapsed -= marqueeRotationPeriod
+                    marqueeRotationIndex = (marqueeRotationIndex + 1) % KeyboardMarqueeMode.rotation.count
+                }
+            }
         }
         let tailKey = orderedKeys.first { $0 != leftKey && $0 != rightKey && $0 != footKey }
         var tip = tailTyping.target > 0 ? tailKey.map { KeyboardLayout.canvasPoint(for: $0) } ?? CGPoint(x: 275, y: 196) : CGPoint(x: 275, y: 196)
@@ -1375,12 +1432,24 @@ final class CatPhysics {
 
         // Compute normalized vector from cat head to real macOS screen cursor
         let scale = max(0.2, windowFrameInScreen.width / CatPhysics.canvasSize.width)
-        let headCanvasX = flipped ? (CatPhysics.canvasSize.width - eyeOriginCanvas.x) : eyeOriginCanvas.x
+        var headCanvasX = flipped ? (CatPhysics.canvasSize.width - eyeOriginCanvas.x) : eyeOriginCanvas.x
+        var headCanvasY = eyeOriginCanvas.y
+        if hasRot {
+            let fitScale = 1.0 - abs(sin(rotRad)) * 0.14
+            let dx = headCanvasX - 180.0
+            let dy = headCanvasY - 160.0
+            headCanvasX = 180.0 + (dx * cos(rotRad) - dy * sin(rotRad)) * fitScale
+            headCanvasY = 160.0 + (dx * sin(rotRad) + dy * cos(rotRad)) * fitScale
+        }
         let headScreenX = windowFrameInScreen.minX + headCanvasX * scale
-        let headScreenY = windowFrameInScreen.maxY - eyeOriginCanvas.y * scale
+        let headScreenY = windowFrameInScreen.maxY - headCanvasY * scale
         let cursor = curMouseLoc
-        let curDx = ((cursor.x - headScreenX) / 290.0) * flipSign
-        let curDy = -(cursor.y - headScreenY) / 260.0
+        let rawWorldDx = cursor.x - headScreenX
+        let rawWorldDy = -(cursor.y - headScreenY)
+        let localWorldDx = hasRot ? (rawWorldDx * cos(-rotRad) - rawWorldDy * sin(-rotRad)) : rawWorldDx
+        let localWorldDy = hasRot ? (rawWorldDx * sin(-rotRad) + rawWorldDy * cos(-rotRad)) : rawWorldDy
+        let curDx = (localWorldDx / 290.0) * flipSign
+        let curDy = localWorldDy / 260.0
         let curMag = hypot(curDx, curDy)
         let clampedCur = min(1.0, curMag)
         let cursorNX = curMag > 0.001 ? (curDx / curMag) * clampedCur : 0
@@ -1404,12 +1473,29 @@ final class CatPhysics {
         }
 
         // Head turns smoothly in 2.5D (yaw & pitch) — locks on faster during hunting mode!
+        // Music listening blend & gentle rhythm sway/nod
+        let wantMusic: CGFloat = (isMusicPlaying && CatSettings.shared.autoHeadphonesOnMusic) ? 1.0 : 0.0
+        let musicRate: CGFloat = wantMusic > musicIntensity ? 3.2 : 2.0
+        musicIntensity += (wantMusic - musicIntensity) * min(1.0, dt * musicRate)
+        if musicIntensity < 0.002 && wantMusic == 0 { musicIntensity = 0 }
+        if musicIntensity > 0.005 {
+            musicPhase += dt * 5.86 // ~112 BPM half-cycle beat
+            if musicPhase > 6283.18 { musicPhase -= 6283.18 }
+        }
+        let rAwake: CGFloat = 1.0 - min(1.0, sleepiness * 1.1)
+        let rScruff: CGFloat = 1.0 - min(1.0, scruffDrag.value * 1.2)
+        let rDizzy: CGFloat = 1.0 - min(1.0, dizzyIntensity.value * 1.4)
+        let rAnger: CGFloat = 1.0 - min(1.0, angerIntensity.value * 0.8)
+        let musicRhythm: CGFloat = musicIntensity * rAwake * rScruff * rDizzy * rAnger
+        let musicNod = abs(sin(musicPhase)) * 0.14 * musicRhythm
+        let musicSway = sin(musicPhase * 0.5) * 0.068 * musicRhythm
+
         if sleepiness > 0.45 {
             headYaw.target = 0
             headPitch.target = 0.45 * sleepiness * (1.0 - classicSleepBlend)
         } else {
             headYaw.target = max(-1.0, min(1.0, lookTargetX))
-            headPitch.target = max(-1.0, min(1.0, lookTargetY))
+            headPitch.target = max(-1.0, min(1.0, lookTargetY + musicNod))
         }
         let headStiff: CGFloat = 88 + hunt * 75
         let headDamp: CGFloat = 14.5 + hunt * 4.5
@@ -1418,7 +1504,7 @@ final class CatPhysics {
 
         // Subtle natural head roll coupled to head turning (curious tilt / locked-on hunt!)
         if now - lastPetTime > 0.28 {
-            headTilt.target = (bodyTilt.target * 0.45 + headYaw.value * (0.11 + hunt * 0.05) - headYaw.value * headPitch.value * 0.04 + lie * 0.12) * (1.0 - classicSleepBlend)
+            headTilt.target = (bodyTilt.target * 0.45 + headYaw.value * (0.11 + hunt * 0.05) - headYaw.value * headPitch.value * 0.04 + lie * 0.12 + musicSway) * (1.0 - classicSleepBlend)
         }
         headTilt.step(dt: dt, stiffness: 130, damping: 16)
 
@@ -1516,7 +1602,11 @@ struct SkinColor: Hashable {
         SkinColor(r: CGFloat((rgb >> 16) & 255)/255, g: CGFloat((rgb >> 8) & 255)/255, b: CGFloat(rgb & 255)/255, a: a)
     }
     var ns: NSColor { NSColor(calibratedRed: r, green: g, blue: b, alpha: a) }
-    func withAlpha(_ alpha: CGFloat) -> NSColor { NSColor(calibratedRed: r, green: g, blue: b, alpha: alpha) }
+    var srgbNS: NSColor { NSColor(srgbRed: r, green: g, blue: b, alpha: a) }
+    func withAlpha(_ alpha: CGFloat, srgb: Bool = false) -> NSColor {
+        srgb ? NSColor(srgbRed: r, green: g, blue: b, alpha: a * alpha)
+             : NSColor(calibratedRed: r, green: g, blue: b, alpha: a * alpha)
+    }
     var luminance: CGFloat { 0.2126 * r + 0.7152 * g + 0.0722 * b }
 }
 
@@ -1525,7 +1615,7 @@ enum SkinSpace: String { case head, skull, body, tail, leftEar, rightEar, leftAr
 enum SkinBuild: String { case standard, sleek }
 enum SkinHeadSurface: String { case dome, plane }
 enum SkinAnchorPoint: String { case headTop, face, neck, tailTip }
-enum SkinRenderStyle: String { case standard, douni, dazed }
+enum SkinRenderStyle: String { case standard, douni, dazed, beagle }
 enum SkinTypingStyle: String { case standard, douni }
 
 /// One pen-tool anchor; in/out are absolute handle positions in the same part space.
@@ -1538,6 +1628,10 @@ struct SkinRegion {
     var flat: [CGPoint]                  // 16 segments per cubic, in part space
 }
 
+enum SkinBrush: String {
+    case round, soft, airbrush, smudge
+}
+
 struct SkinMark {
     var space: SkinSpace
     var stroke: Bool
@@ -1545,6 +1639,8 @@ struct SkinMark {
     var color: SkinColor
     var points: [CGPoint]
     var clipToBib: Bool = false
+    var brush: SkinBrush = .round
+    var softness: CGFloat = 0.65
 }
 
 struct SkinShape: Hashable {
@@ -1611,7 +1707,20 @@ struct SkinSpec {
     var preview: Data?
 
     static let maxFileBytes = 2 * 1024 * 1024
-    static let formatVersion = 1
+    // formatVersion 2 = same fields as 1, written by the workshop when the skin needs an app newer than 1.5.2
+    // (the last release that only knew formatVersion 1); `minAppVersion` says which one.
+    static let formatVersion = 2
+    static let maxMarks = 1024 // 256 up to 1.5.2
+
+    /// -1 / 0 / 1 for dotted numeric versions ("1.4.10" > "1.4.9"); missing parts count as 0.
+    static func compareVersions(_ a: String, _ b: String) -> Int {
+        let x = a.split(separator: ".").map { Int($0) ?? 0 }, y = b.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(x.count, y.count) {
+            let l = i < x.count ? x[i] : 0, r = i < y.count ? y[i] : 0
+            if l != r { return l < r ? -1 : 1 }
+        }
+        return 0
+    }
 
     var colorpoint: Bool { palette.points != nil }
     func hasPartArt(_ space: SkinSpace) -> Bool {
@@ -1769,6 +1878,15 @@ struct SkinSpec {
         guard let vn = numberValue(ver), vn == vn.rounded() else { throw fail("formatVersion 必须是整数") }
         if vn > Double(formatVersion) { throw fail("这个皮肤使用了更新的格式（formatVersion \(Int(vn))），请先升级 KuroCat") }
         if vn < 1 { throw fail("formatVersion 无效") }
+        if let minApp = root["minAppVersion"] {
+            guard let v = minApp as? String, v.count <= 16,
+                  v.range(of: #"^[0-9]+(\.[0-9]+)*$"#, options: .regularExpression) != nil
+            else { throw fail("minAppVersion 必须是形如 \"1.5.3\" 的版本号") }
+            // Unset in tests and other bundles without a version: skip the check there.
+            if let app = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, compareVersions(v, app) > 0 {
+                throw fail("这个皮肤需要 KuroCat \(v) 或更新版本（当前 \(app)），请先升级 KuroCat")
+            }
+        }
 
         var spec = SkinSpec()
         guard let name = root["name"] as? String else { throw fail("缺少皮肤名称 name") }
@@ -1909,7 +2027,7 @@ struct SkinSpec {
         // Marks (polygons / strokes, same model as the built-in CoatMark artwork)
         if let marksAny = root["marks"], !isNull(marksAny) {
             guard let marks = marksAny as? [Any] else { throw fail("marks 必须是数组") }
-            if marks.count > 256 { throw fail("marks 最多 256 条") }
+            if marks.count > maxMarks { throw fail("marks 最多 \(maxMarks) 条") }
             for (i, mAny) in marks.enumerated() {
                 let f = "marks[\(i)]"
                 guard let m = mAny as? [String: Any] else { throw fail("\(f) 必须是对象") }
@@ -1932,7 +2050,9 @@ struct SkinSpec {
                     pts.append(CGPoint(x: min(400, max(-400, x)), y: min(400, max(-400, y))))
                 }
                 let clipToBib = (m["clipToBib"] as? Bool) == true
-                spec.marks.append(SkinMark(space: sp, stroke: stroke, width: width, color: c, points: pts, clipToBib: clipToBib))
+                let brush = (m["brush"] as? String).flatMap(SkinBrush.init(rawValue:)) ?? .round
+                let softness = try number(m["softness"], "\(f).softness", 0, 1, 0.65)
+                spec.marks.append(SkinMark(space: sp, stroke: stroke, width: width, color: c, points: pts, clipToBib: clipToBib, brush: brush, softness: softness))
             }
         }
 
@@ -1979,7 +2099,7 @@ struct SkinSpec {
         let w = image.width, h = image.height
         guard w > 0, h > 0,
               let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
             return image
         }
@@ -2071,6 +2191,27 @@ final class SkinLibrary {
         let ok = (try? FileManager.default.removeItem(at: Self.directory.appendingPathComponent("\(id).kurocat"))) != nil
         reload()
         return ok
+    }
+
+    @discardableResult
+    func removeMany(ids: [String]) -> (removed: [String], failed: [String]) {
+        var removed: [String] = []
+        var failed: [String] = []
+        let fm = FileManager.default
+        for id in ids {
+            guard id.count == 16, id.allSatisfy({ "0123456789abcdef".contains($0) }) else {
+                failed.append(id)
+                continue
+            }
+            let url = Self.directory.appendingPathComponent("\(id).kurocat")
+            if (try? fm.removeItem(at: url)) != nil {
+                removed.append(id)
+            } else {
+                failed.append(id)
+            }
+        }
+        reload()
+        return (removed, failed)
     }
 
     /// Display name with short ID suffix when multiple imported skins share the same name.
@@ -2324,3 +2465,23 @@ final class KeyboardSkinLibrary {
         return ok
     }
 }
+
+// <rig:generated> generated by scripts/gen-rig.py from shared/rig.json; edit that file, not this block
+enum KuroRig {
+    static let canvasWidth: CGFloat = 360.0
+    static let canvasHeight: CGFloat = 320.0
+    static let seatX: CGFloat = 184.0
+    static let seatY: CGFloat = 226.0
+    static let yawPerUnit: CGFloat = 0.5
+    static let pitchPerUnit: CGFloat = 0.36
+    static let maxHeadYaw: CGFloat = 1.0
+    static let headShiftPerYaw: CGFloat = 7.5
+    static let domeRadiusX: CGFloat = 46.0
+    static let domeRadiusY: CGFloat = 40.0
+    static let domeDepth: CGFloat = 29.6
+    static let planeDepth: CGFloat = 27.5
+    static let lieSquash: CGFloat = 0.42
+    static let squashWiden: CGFloat = 0.55
+    static let lieWiden: CGFloat = 0.03
+}
+// </rig:generated>

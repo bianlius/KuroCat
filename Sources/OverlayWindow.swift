@@ -22,6 +22,7 @@ private struct RenderedPose {
         let keyboardSkinId: String
         let showsLegends: Bool
         let levelKeyboard: Bool
+        let marqueeMode: Int
         let captureMode: Int
         let showEditControls: Bool
         let englishLabels: Bool
@@ -96,6 +97,7 @@ private struct RenderedPose {
             keyboardSkinId: settings.activeKeyboardSkin.id,
             showsLegends: settings.showKeyLegends,
             levelKeyboard: settings.levelKeyboard,
+            marqueeMode: settings.marqueeMode.rawValue,
             captureMode: settings.obsCaptureMode,
             showEditControls: settings.isEditMode,
             englishLabels: settings.isEnglish
@@ -104,7 +106,8 @@ private struct RenderedPose {
         let scruff = physics.scruffDrag.value
         let loaf = physics.douniLoafBlend.value
         let asleep = physics.sleepiness >= 0.95
-        let keyboardVisible = (skin.renderStyle == .douni) ? (loaf < 0.99 && scruff < 0.99) : (scruff * 2.6 < 0.99)
+        let usesDouniDesk = (skin.renderStyle == .douni || skin.renderStyle == .beagle)
+        let keyboardVisible = usesDouniDesk ? (loaf < 0.99 && scruff < 0.99) : (scruff * 2.6 < 0.99)
         marqueeBucket = (settings.keyboardMarquee && keyboardVisible)
             ? CatRenderer.marqueeBucket(phase: physics.marqueePhase, asleep: asleep)
             : -1
@@ -160,7 +163,7 @@ private struct RenderedPose {
         douniRightRaise = physics.douniRightRaise.value
         douniLeftTarget = physics.douniLeftKeyTarget.point
         douniRightTarget = physics.douniRightKeyTarget.point
-        if skin.renderStyle == .douni && loaf > 0.85 {
+        if usesDouniDesk && loaf > 0.85 {
             douniBreath = sin(physics.time * (asleep ? 1.7 : 2.3))
             douniAccentBucket = (asleep || pet > 0.05) ? Int((physics.time * (asleep ? 15.0 : 24.0)).rounded()) : 0
         } else {
@@ -242,7 +245,7 @@ private struct RenderedPose {
 }
 
 final class CatCanvasView: NSView {
-    private static let fgColorSpace = CGColorSpaceCreateDeviceRGB()
+    private static let fgColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
     private enum ActiveCursor { case arrow, openHand, pointingHand, crosshair, closedHand }
 
     let physics = CatPhysics()
@@ -268,6 +271,8 @@ final class CatCanvasView: NSView {
 
     private var lastHoverCanvasPt: CGPoint?
     private var isDragging = false
+    private var pendingDoubleClickToggle = false
+    private var doubleClickDownScreenPt: CGPoint = .zero
     private var isRotating = false
     private var rotateStartMouseAngle: CGFloat = 0
     private var rotateStartDeg: CGFloat = 0
@@ -276,6 +281,8 @@ final class CatCanvasView: NSView {
     private var resizeStartFrame: CGRect = .zero
     private var dragStartScreenPt: CGPoint = .zero
     private var dragStartWindowOrigin: CGPoint = .zero
+    private var dragScruffAnchorDelta: CGPoint = .zero
+    private var lastDragScreenPt: CGPoint = .zero
     private var activeCursor: ActiveCursor = .arrow
     private var lastHoverWasInside = false
     private var lastDrawnPose: RenderedPose?
@@ -291,6 +298,7 @@ final class CatCanvasView: NSView {
     private let toastHold: Double = 4.2
     private let toastFadeOut: Double = 0.4
     var toastActive: Bool { toastText != nil }
+    var forceClickThroughForModal = false
 
     var isDraggingOrResizing: Bool { isDragging || isRotating || activeResizeCorner >= 0 }
 
@@ -412,9 +420,19 @@ final class CatCanvasView: NSView {
     /// Updates smart click-through, cursor shape, and head petting strokes.
     func updateHoverAndClickThrough() {
         guard let win = window else { return }
+        if forceClickThroughForModal {
+            if !win.ignoresMouseEvents {
+                win.ignoresMouseEvents = true
+            }
+            setCursorIfNeeded(.arrow)
+            return
+        }
         if isDraggingOrResizing {
             if win.ignoresMouseEvents {
                 win.ignoresMouseEvents = false
+            }
+            if isDragging {
+                syncDraggedWindowPosition(win: win)
             }
             return
         }
@@ -459,7 +477,7 @@ final class CatCanvasView: NSView {
 
         // Petting triggers strictly on the cat's head (never on keyboard or torso)!
         if zone == .head {
-            let skipPetForHunt = (CatSettings.shared.activeSkin.renderStyle == .douni && physics.huntIntensity.value > 0.20)
+            let skipPetForHunt = ((CatSettings.shared.activeSkin.renderStyle == .douni || CatSettings.shared.activeSkin.renderStyle == .beagle) && physics.huntIntensity.value > 0.20)
             if !skipPetForHunt, let prev = lastHoverCanvasPt {
                 let delta = hypot(catPt.x - prev.x, catPt.y - prev.y)
                 if delta > 1.2 && delta < 80 {
@@ -510,6 +528,7 @@ final class CatCanvasView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         onUserInteraction?()
+        pendingDoubleClickToggle = false
         guard let win = window else { return }
         let screenPt = NSEvent.mouseLocation
         let showPill = InputEngine.shared.status.needsAttention
@@ -552,25 +571,66 @@ final class CatCanvasView: NSView {
                 return
             }
 
-            // Double-clicking the cat toggles the clean resize & direction edit box!
+            // Double-clicking toggles the clean resize & direction edit box; if the user keeps
+            // holding and drags past 4pt on the second click, seamlessly start scruff-drag instead.
             if event.clickCount == 2 && (zone == .head || zone == .body || CatSettings.shared.isEditMode) {
-                CatSettings.shared.isEditMode.toggle()
-                needsDisplay = true
+                pendingDoubleClickToggle = true
+                doubleClickDownScreenPt = screenPt
+                dragStartScreenPt = screenPt
+                dragStartWindowOrigin = win.frame.origin
                 return
             }
         }
 
         isDragging = true
         dragStartScreenPt = screenPt
+        lastDragScreenPt = screenPt
         dragStartWindowOrigin = win.frame.origin
+        dragScruffAnchorDelta = computeScruffAnchorDelta(window: win, cursorScreenPt: screenPt)
         physics.setDragging(true, dragDx: 0)
         setCursorIfNeeded(.closedHand)
+    }
+
+    private func computeScruffAnchorDelta(window win: NSWindow, cursorScreenPt screenPt: CGPoint) -> CGPoint {
+        let s = CatSettings.shared
+        guard s.enableDragAnimation else { return .zero }
+        let pinchCanvas = CatRenderer.scruffPinchCanvasPoint(skin: s.activeSkin, flipped: s.flipHorizontal, rotationDeg: s.rotationDeg)
+        let scale = win.frame.width / CatPhysics.canvasSize.width
+        let pinchOffsetX = pinchCanvas.x * scale
+        let pinchOffsetY = win.frame.height - (pinchCanvas.y + CatCanvasView.contentTopInset) * scale
+        return CGPoint(
+            x: (screenPt.x - pinchOffsetX) - win.frame.origin.x,
+            y: (screenPt.y - pinchOffsetY) - win.frame.origin.y
+        )
+    }
+
+    private func syncDraggedWindowPosition(win: NSWindow) {
+        let currentScreenPt = NSEvent.mouseLocation
+        let t = max(0, min(1, physics.scruffDrag.value))
+        let ease = t * t * (3.0 - 2.0 * t)
+        let newOrigin = CGPoint(
+            x: dragStartWindowOrigin.x + (currentScreenPt.x - dragStartScreenPt.x) + dragScruffAnchorDelta.x * ease,
+            y: dragStartWindowOrigin.y + (currentScreenPt.y - dragStartScreenPt.y) + dragScruffAnchorDelta.y * ease
+        )
+        win.setFrameOrigin(newOrigin)
     }
 
     override func mouseDragged(with event: NSEvent) {
         onUserInteraction?()
         guard let win = window else { return }
         let currentScreenPt = NSEvent.mouseLocation
+        if pendingDoubleClickToggle {
+            if hypot(currentScreenPt.x - doubleClickDownScreenPt.x, currentScreenPt.y - doubleClickDownScreenPt.y) >= 4.0 {
+                pendingDoubleClickToggle = false
+                isDragging = true
+                lastDragScreenPt = currentScreenPt
+                dragScruffAnchorDelta = computeScruffAnchorDelta(window: win, cursorScreenPt: dragStartScreenPt)
+                physics.setDragging(true, dragDx: 0)
+                setCursorIfNeeded(.closedHand)
+            } else {
+                return
+            }
+        }
         if isRotating {
             let center = CGPoint(x: win.frame.midX, y: win.frame.midY)
             let curAngle = atan2(-(currentScreenPt.y - center.y), currentScreenPt.x - center.x)
@@ -600,20 +660,15 @@ final class CatCanvasView: NSView {
             return
         }
         guard isDragging else { return }
-        let prevX = win.frame.origin.x
-        let prevY = win.frame.origin.y
-        let newOrigin = CGPoint(
-            x: dragStartWindowOrigin.x + (currentScreenPt.x - dragStartScreenPt.x),
-            y: dragStartWindowOrigin.y + (currentScreenPt.y - dragStartScreenPt.y)
-        )
-        let rawDx = newOrigin.x - prevX
-        let rawDy = -(newOrigin.y - prevY)
+        let rawDx = currentScreenPt.x - lastDragScreenPt.x
+        let rawDy = -(currentScreenPt.y - lastDragScreenPt.y)
+        lastDragScreenPt = currentScreenPt
         // Transform world drag velocity into cat-local orientation so trailing inertia matches world motion at any angle!
         let rad = -CatSettings.shared.rotationDeg * .pi / 180.0
         let localDx = rawDx * cos(rad) - rawDy * sin(rad)
         let localDy = rawDx * sin(rad) + rawDy * cos(rad)
         physics.setDragging(true, dragDx: CatSettings.shared.flipHorizontal ? -localDx : localDx, dragDy: localDy)
-        win.setFrameOrigin(newOrigin)
+        syncDraggedWindowPosition(win: win)
     }
 
     private static func resizeLayout(from frame: CGRect, corner: Int, delta: CGPoint)
@@ -637,6 +692,12 @@ final class CatCanvasView: NSView {
     override func mouseUp(with event: NSEvent) {
         onUserInteraction?()
         guard let win = window else { return }
+        if pendingDoubleClickToggle {
+            pendingDoubleClickToggle = false
+            CatSettings.shared.isEditMode.toggle()
+            needsDisplay = true
+            return
+        }
         if isRotating {
             isRotating = false
             if !rotateDragged {
@@ -656,6 +717,7 @@ final class CatCanvasView: NSView {
         }
         guard isDragging else { return }
         isDragging = false
+        dragScruffAnchorDelta = .zero
         physics.setDragging(false)
         setCursorIfNeeded(.openHand)
         // Save position immediately so restarts always preserve exact coordinates
@@ -1180,11 +1242,21 @@ final class DressingRoomWindowController: NSWindowController {
 
     var isVisible: Bool { window?.isVisible ?? false }
 
+    func syncWindowLevel() {
+        guard let window else { return }
+        window.level = CatSettings.shared.fullScreenOverlay
+            ? NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.popUpMenuWindow)) + 1)
+            : .floating
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+    }
+
     func present() {
+        syncWindowLevel()
         refresh()
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
     }
 
     @objc private func chooseFile() {
@@ -1202,27 +1274,286 @@ final class DressingRoomWindowController: NSWindowController {
     }
 }
 
-// MARK: - Unified Native Settings Window (System Light/Dark Adaptive)
+// MARK: - Unified KuroCat Settings & Batch Skin Manager (Minimal Pure-White Operate UI, Vector-Only)
+
+private enum KuroUITheme {
+    private static func adaptive(light: NSColor, dark: NSColor) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let match = appearance.bestMatch(from: [.darkAqua, .aqua])
+            return match == .darkAqua ? dark : light
+        }
+    }
+
+    static let windowBg = adaptive(
+        light: NSColor(srgbRed: 1.000, green: 1.000, blue: 1.000, alpha: 1), // #FFFFFF
+        dark:  NSColor(srgbRed: 0.094, green: 0.094, blue: 0.102, alpha: 1)  // #18181A
+    )
+    static let cardBg = adaptive(
+        light: NSColor(srgbRed: 1.000, green: 1.000, blue: 1.000, alpha: 1), // #FFFFFF
+        dark:  NSColor(srgbRed: 0.125, green: 0.125, blue: 0.137, alpha: 1)  // #202023
+    )
+    static let surfaceMuted = adaptive(
+        light: NSColor(srgbRed: 0.957, green: 0.957, blue: 0.965, alpha: 1), // #F4F4F6
+        dark:  NSColor(srgbRed: 0.165, green: 0.165, blue: 0.180, alpha: 1)  // #2A2A2E
+    )
+    static let surfaceHover = adaptive(
+        light: NSColor(srgbRed: 0.918, green: 0.918, blue: 0.933, alpha: 1), // #EAEAEF
+        dark:  NSColor(srgbRed: 0.212, green: 0.212, blue: 0.231, alpha: 1)  // #36363B
+    )
+    static let border = adaptive(
+        light: NSColor(srgbRed: 0.902, green: 0.902, blue: 0.922, alpha: 1), // #E6E6EB
+        dark:  NSColor(srgbRed: 0.212, green: 0.212, blue: 0.235, alpha: 1)  // #36363C
+    )
+    static let divider = adaptive(
+        light: NSColor(srgbRed: 0.941, green: 0.941, blue: 0.953, alpha: 1), // #F0F0F3
+        dark:  NSColor(srgbRed: 0.176, green: 0.176, blue: 0.196, alpha: 1)  // #2D2D32
+    )
+    static let ink = adaptive(
+        light: NSColor(srgbRed: 0.075, green: 0.075, blue: 0.086, alpha: 1), // #131316
+        dark:  NSColor(srgbRed: 0.961, green: 0.961, blue: 0.969, alpha: 1)  // #F5F5F7
+    )
+    static let secondaryInk = adaptive(
+        light: NSColor(srgbRed: 0.431, green: 0.431, blue: 0.451, alpha: 1), // #6E6E73
+        dark:  NSColor(srgbRed: 0.596, green: 0.596, blue: 0.624, alpha: 1)  // #98989F
+    )
+    static let accent = adaptive(
+        light: NSColor(srgbRed: 0.094, green: 0.094, blue: 0.106, alpha: 1), // #18181B
+        dark:  NSColor(srgbRed: 0.941, green: 0.941, blue: 0.953, alpha: 1)  // #F0F0F3
+    )
+    static let accentForeground = adaptive(
+        light: NSColor.white,
+        dark:  NSColor(srgbRed: 0.075, green: 0.075, blue: 0.086, alpha: 1)
+    )
+    static let accentDown = adaptive(
+        light: NSColor(srgbRed: 0.196, green: 0.196, blue: 0.216, alpha: 1), // #323237
+        dark:  NSColor(srgbRed: 0.820, green: 0.820, blue: 0.840, alpha: 1)
+    )
+    static let accentSoft = adaptive(
+        light: NSColor(srgbRed: 0.949, green: 0.949, blue: 0.961, alpha: 1), // #F2F2F5
+        dark:  NSColor(srgbRed: 0.188, green: 0.188, blue: 0.212, alpha: 1)  // #303036
+    )
+    static let danger = adaptive(
+        light: NSColor(srgbRed: 0.863, green: 0.149, blue: 0.149, alpha: 1), // #DC2626
+        dark:  NSColor(srgbRed: 0.937, green: 0.267, blue: 0.267, alpha: 1)  // #EF4444
+    )
+    static let dangerSoft = adaptive(
+        light: NSColor(srgbRed: 0.996, green: 0.949, blue: 0.949, alpha: 1), // #FEF2F2
+        dark:  NSColor(srgbRed: 0.251, green: 0.118, blue: 0.122, alpha: 1)  // #401E1F
+    )
+    static let switchOff = adaptive(
+        light: NSColor(srgbRed: 0.855, green: 0.855, blue: 0.878, alpha: 1), // #DADAE0
+        dark:  NSColor(srgbRed: 0.267, green: 0.267, blue: 0.290, alpha: 1)  // #44444A
+    )
+    static let tabActiveBg = adaptive(
+        light: NSColor.white,
+        dark:  NSColor(srgbRed: 0.235, green: 0.235, blue: 0.259, alpha: 1)
+    )
+}
 
 private final class SettingsCardView: NSView {
+    var fillColor: NSColor = KuroUITheme.cardBg
+    var strokeColor: NSColor = KuroUITheme.border
+    var cornerRadius: CGFloat = 10
+
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
         let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
-        let path = NSBezierPath(roundedRect: rect, xRadius: 12, yRadius: 12)
-        NSColor.controlBackgroundColor.setFill()
+        let path = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
+        fillColor.setFill()
         path.fill()
-        NSColor.separatorColor.withAlphaComponent(0.55).setStroke()
+        strokeColor.setStroke()
         path.lineWidth = 1.0
         path.stroke()
     }
 }
 
-/// Consolidated native macOS Settings window grouping Appearance, Interaction, and Window/System controls.
-final class SettingsWindowController: NSWindowController {
+private final class KuroBadgePillView: NSView {
+    private let text: String
+    private let bg: NSColor
+    private let fg: NSColor
+    override var isFlipped: Bool { true }
+
+    init(frame: NSRect, text: String, bg: NSColor, fg: NSColor) {
+        self.text = text
+        self.bg = bg
+        self.fg = fg
+        super.init(frame: frame)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
+        bg.setFill()
+        path.fill()
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium), .foregroundColor: fg]
+        let sz = (text as NSString).size(withAttributes: attrs)
+        (text as NSString).draw(at: NSPoint(x: bounds.midX - sz.width * 0.5, y: bounds.midY - sz.height * 0.5), withAttributes: attrs)
+    }
+}
+
+private final class KuroThemedButton: NSButton {
+    enum Variant { case primary, secondary, danger, dangerSolid }
+
+    var variant: Variant = .secondary { didSet { needsDisplay = true } }
+    var fontSize: CGFloat = 12
+
+    override func resetCursorRects() {
+        if isEnabled { addCursorRect(bounds, cursor: .pointingHand) }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let r = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let rad: CGFloat = 7
+        let path = NSBezierPath(roundedRect: r, xRadius: rad, yRadius: rad)
+
+        let bg: NSColor
+        let fg: NSColor
+        var stroke: NSColor? = nil
+        if !isEnabled {
+            bg = KuroUITheme.surfaceMuted.withAlphaComponent(0.6)
+            fg = KuroUITheme.secondaryInk.withAlphaComponent(0.45)
+            stroke = KuroUITheme.border.withAlphaComponent(0.6)
+        } else {
+            switch variant {
+            case .primary:
+                bg = isHighlighted ? KuroUITheme.accentDown : KuroUITheme.accent
+                fg = KuroUITheme.accentForeground
+            case .secondary:
+                bg = isHighlighted ? KuroUITheme.surfaceHover : KuroUITheme.cardBg
+                fg = KuroUITheme.ink
+                stroke = KuroUITheme.border
+            case .danger:
+                bg = isHighlighted ? KuroUITheme.danger.withAlphaComponent(0.14) : KuroUITheme.cardBg
+                fg = KuroUITheme.danger
+                stroke = KuroUITheme.danger.withAlphaComponent(0.32)
+            case .dangerSolid:
+                bg = isHighlighted ? KuroUITheme.danger.blended(withFraction: 0.16, of: .black) ?? KuroUITheme.danger : KuroUITheme.danger
+                fg = .white
+            }
+        }
+        bg.setFill()
+        path.fill()
+        if let stroke {
+            stroke.setStroke()
+            path.lineWidth = 1.0
+            path.stroke()
+        }
+
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: fontSize, weight: (variant == .primary || variant == .dangerSolid) ? .medium : .regular),
+            .foregroundColor: fg
+        ]
+        let sz = (title as NSString).size(withAttributes: attrs)
+        (title as NSString).draw(at: NSPoint(x: bounds.midX - sz.width * 0.5, y: bounds.midY - sz.height * 0.5 - 0.5), withAttributes: attrs)
+    }
+}
+
+/// Minimal monochrome vector toggle switch (zero bitmap overhead).
+private final class KuroSwitchControl: NSControl {
+    var isOn: Bool = false { didSet { needsDisplay = true } }
+    override var isEnabled: Bool { didSet { needsDisplay = true } }
+    override var isFlipped: Bool { true }
+
+    init(isOn: Bool, target: AnyObject?, action: Selector?) {
+        self.isOn = isOn
+        super.init(frame: NSRect(x: 0, y: 0, width: 36, height: 20))
+        self.target = target
+        self.action = action
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func resetCursorRects() {
+        if isEnabled { addCursorRect(bounds, cursor: .pointingHand) }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        isOn.toggle()
+        if let action { NSApp.sendAction(action, to: target, from: self) }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let track = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let path = NSBezierPath(roundedRect: track, xRadius: track.height * 0.5, yRadius: track.height * 0.5)
+        let trackColor = isOn ? KuroUITheme.accent : KuroUITheme.switchOff
+        (isEnabled ? trackColor : trackColor.withAlphaComponent(0.45)).setFill()
+        path.fill()
+
+        let d: CGFloat = bounds.height - 4
+        let knobX = isOn ? (bounds.width - d - 2) : 2
+        let knob = NSBezierPath(ovalIn: NSRect(x: knobX, y: 2, width: d, height: d))
+        let knobColor = isOn ? KuroUITheme.accentForeground : NSColor.white
+        knobColor.withAlphaComponent(isEnabled ? 0.98 : 0.72).setFill()
+        knob.fill()
+    }
+}
+
+private final class KuroTabBarView: NSView {
+    var titles: [String] = [] { didSet { needsDisplay = true } }
+    var selectedIndex: Int = 0 { didSet { needsDisplay = true } }
+    var onSelect: ((Int) -> Void)?
+    override var isFlipped: Bool { true }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard !titles.isEmpty else { return }
+        let pt = convert(event.locationInWindow, from: nil)
+        let segW = bounds.width / CGFloat(titles.count)
+        let idx = max(0, min(titles.count - 1, Int(pt.x / segW)))
+        if idx != selectedIndex {
+            selectedIndex = idx
+            onSelect?(idx)
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let bg = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 9, yRadius: 9)
+        KuroUITheme.surfaceMuted.setFill()
+        bg.fill()
+
+        guard !titles.isEmpty else { return }
+        let pad: CGFloat = 3
+        let segW = (bounds.width - pad * 2) / CGFloat(titles.count)
+        for (i, title) in titles.enumerated() {
+            let segRect = NSRect(x: pad + CGFloat(i) * segW, y: pad, width: segW, height: bounds.height - pad * 2)
+            let active = (i == selectedIndex)
+            if active {
+                NSGraphicsContext.saveGraphicsState()
+                let shadow = NSShadow()
+                shadow.shadowColor = NSColor.black.withAlphaComponent(0.08)
+                shadow.shadowOffset = NSSize(width: 0, height: -1)
+                shadow.shadowBlurRadius = 2.5
+                shadow.set()
+                let pill = NSBezierPath(roundedRect: segRect.insetBy(dx: 0.5, dy: 0.5), xRadius: 6.5, yRadius: 6.5)
+                KuroUITheme.tabActiveBg.setFill()
+                pill.fill()
+                NSGraphicsContext.restoreGraphicsState()
+
+                let pillStroke = NSBezierPath(roundedRect: segRect.insetBy(dx: 0.5, dy: 0.5), xRadius: 6.5, yRadius: 6.5)
+                KuroUITheme.border.withAlphaComponent(0.8).setStroke()
+                pillStroke.lineWidth = 0.75
+                pillStroke.stroke()
+            }
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 12.5, weight: active ? .semibold : .regular),
+                .foregroundColor: active ? KuroUITheme.ink : KuroUITheme.secondaryInk
+            ]
+            let sz = (title as NSString).size(withAttributes: attrs)
+            (title as NSString).draw(at: NSPoint(x: segRect.midX - sz.width * 0.5, y: segRect.midY - sz.height * 0.5 - 0.5), withAttributes: attrs)
+        }
+    }
+}
+
+/// Consolidated KuroCat Preferences window (warm light/dark adaptive cards, 3 tabs, releases contentView on close).
+final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onSettingsChanged: (() -> Void)?
     var onScaleChanged: ((CGFloat) -> Void)?
     var onResetPoseAndPosition: (() -> Void)?
     var onOpenDressingRoom: (() -> Void)?
+    var onOpenSkinManager: (() -> Void)?
     var onSkinsDirectoryChanged: (() -> Void)?
     var onRenameSkin: ((String) -> Void)?
     var onDeleteSkin: ((String) -> Void)?
@@ -1234,53 +1565,57 @@ final class SettingsWindowController: NSWindowController {
     var setAutoStart: ((Bool) -> Void)?
     var onLanguageChanged: (() -> Void)?
 
-    private var skinPopup: NSPopUpButton!
-    private var skinsDirLabel: NSTextField!
-    private var resetSkinsDirBtn: NSButton!
-    private var kbPopup: NSPopUpButton!
-    private var eyePopup: NSPopUpButton!
-    private var tabletPopup: NSPopUpButton!
-    private var typingLimbPopup: NSPopUpButton!
-    private var obsPopup: NSPopUpButton!
-    private var langSeg: NSSegmentedControl!
+    private var activeTab: Int = 0
+    private var skinPopup: NSPopUpButton?
+    private var skinsDirLabel: NSTextField?
+    private var resetSkinsDirBtn: KuroThemedButton?
+    private var kbPopup: NSPopUpButton?
+    private var eyePopup: NSPopUpButton?
+    private var tabletPopup: NSPopUpButton?
+    private var typingLimbPopup: NSPopUpButton?
+    private var obsPopup: NSPopUpButton?
+    private var langSeg: NSSegmentedControl?
 
-    private var whiteOutlineSwitch: NSSwitch!
-    private var flipSwitch: NSSwitch!
-    private var angerSwitch: NSSwitch!
-    private var dragAnimSwitch: NSSwitch!
-    private var badgesSwitch: NSSwitch!
-    private var mouseBadgesSwitch: NSSwitch!
-    private var legendsSwitch: NSSwitch!
-    private var marqueeSwitch: NSSwitch!
-    private var levelKeyboardSwitch: NSSwitch!
-    private var fullscreenOverlaySwitch: NSSwitch!
-    private var clickThroughSwitch: NSSwitch!
-    private var autoHideSwitch: NSSwitch!
-    private var obsHideSwitch: NSSwitch!
-    private var autoStartSwitch: NSSwitch!
-    private var hourlySwitch: NSSwitch!
+    private var whiteOutlineSwitch: KuroSwitchControl?
+    private var flipSwitch: KuroSwitchControl?
+    private var angerSwitch: KuroSwitchControl?
+    private var dragAnimSwitch: KuroSwitchControl?
+    private var badgesSwitch: KuroSwitchControl?
+    private var mouseBadgesSwitch: KuroSwitchControl?
+    private var legendsSwitch: KuroSwitchControl?
+    private var marqueeSwitch: KuroSwitchControl?
+    private var marqueeModePopup: NSPopUpButton!
+    private var levelKeyboardSwitch: KuroSwitchControl?
+    private var fullscreenOverlaySwitch: KuroSwitchControl?
+    private var clickThroughSwitch: KuroSwitchControl?
+    private var autoHideSwitch: KuroSwitchControl?
+    private var autoHeadphonesSwitch: KuroSwitchControl?
+    private var obsHideSwitch: KuroSwitchControl?
+    private var autoStartSwitch: KuroSwitchControl?
+    private var hourlySwitch: KuroSwitchControl?
 
-    private var rotSlider: NSSlider!
-    private var rotValLabel: NSTextField!
-    private var scaleSlider: NSSlider!
-    private var scaleValLabel: NSTextField!
+    private var rotSlider: NSSlider?
+    private var rotValLabel: NSTextField?
+    private var scaleSlider: NSSlider?
+    private var scaleValLabel: NSTextField?
 
     private var skinIds: [String] = []
     private var kbIds: [String] = []
 
     init() {
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 492, height: 610),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 548),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         win.isReleasedWhenClosed = false
         win.level = .floating
-        win.titlebarAppearsTransparent = false
-        win.backgroundColor = .windowBackgroundColor
+        win.titlebarAppearsTransparent = true
+        win.isMovableByWindowBackground = true
+        win.backgroundColor = KuroUITheme.windowBg
         super.init(window: win)
-        rebuildUI()
+        win.delegate = self
         win.center()
     }
 
@@ -1292,11 +1627,40 @@ final class SettingsWindowController: NSWindowController {
         CatSettings.shared.isEnglish ? en : zh
     }
 
+    func windowWillClose(_ notification: Notification) {
+        // Drop the view hierarchy & backing layers when closed so idle memory stays near zero.
+        clearControlRefs()
+        window?.contentView = nil
+    }
+
+    private func clearControlRefs() {
+        skinPopup = nil; skinsDirLabel = nil; resetSkinsDirBtn = nil
+        kbPopup = nil; eyePopup = nil; tabletPopup = nil; typingLimbPopup = nil
+        obsPopup = nil; langSeg = nil
+        whiteOutlineSwitch = nil; flipSwitch = nil; angerSwitch = nil; dragAnimSwitch = nil
+        badgesSwitch = nil; mouseBadgesSwitch = nil; legendsSwitch = nil; marqueeSwitch = nil
+        marqueeModePopup = nil
+        levelKeyboardSwitch = nil; fullscreenOverlaySwitch = nil; clickThroughSwitch = nil
+        autoHideSwitch = nil; autoHeadphonesSwitch = nil; obsHideSwitch = nil
+        autoStartSwitch = nil; hourlySwitch = nil
+        rotSlider = nil; rotValLabel = nil; scaleSlider = nil; scaleValLabel = nil
+    }
+
+    func syncWindowLevel() {
+        guard let window else { return }
+        window.level = CatSettings.shared.fullScreenOverlay
+            ? NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.popUpMenuWindow)) + 1)
+            : .floating
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+    }
+
     func present() {
+        syncWindowLevel()
         rebuildUI()
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
     }
 
     func refresh() {
@@ -1304,401 +1668,438 @@ final class SettingsWindowController: NSWindowController {
         rebuildUI()
     }
 
+    private func makeBtn(_ title: String, variant: KuroThemedButton.Variant, action: Selector, frame: NSRect, fontSize: CGFloat = 11.5) -> KuroThemedButton {
+        let btn = KuroThemedButton(title: title, target: self, action: action)
+        btn.isBordered = false
+        btn.variant = variant
+        btn.fontSize = fontSize
+        btn.frame = frame
+        return btn
+    }
+
     private func rebuildUI() {
         guard let win = window else { return }
+        clearControlRefs()
         let s = CatSettings.shared
         win.title = tr("KuroCat 设置", "KuroCat Settings")
+        win.backgroundColor = KuroUITheme.windowBg
 
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 492, height: 610))
+        let winW: CGFloat = 520
+        let winH: CGFloat = 548
+        let padX: CGFloat = 20
+        let cardW: CGFloat = winW - padX * 2
+
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: winW, height: winH))
+        let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.5.2"
+
+        // MARK: Minimal Typographic Header (no logo, no bulky banner card)
+        let titleLbl = NSTextField(labelWithString: tr("KuroCat 设置", "KuroCat Settings"))
+        titleLbl.font = .systemFont(ofSize: 17, weight: .semibold)
+        titleLbl.textColor = KuroUITheme.ink
+        titleLbl.frame = NSRect(x: padX, y: 10, width: 260, height: 22)
+        root.addSubview(titleLbl)
+
+        let activeName = s.activeSkin.name
+        let customCount = SkinLibrary.shared.skins.count
+        let subText = customCount > 0
+            ? tr("当前皮肤：\(activeName) · 已导入 \(customCount) 款", "Active: \(activeName) · \(customCount) imported")
+            : tr("当前皮肤：\(activeName)", "Active: \(activeName)")
+        let subLbl = NSTextField(labelWithString: subText)
+        subLbl.font = .systemFont(ofSize: 12)
+        subLbl.textColor = KuroUITheme.secondaryInk
+        subLbl.lineBreakMode = .byTruncatingTail
+        subLbl.frame = NSRect(x: padX, y: 34, width: cardW - 70, height: 16)
+        root.addSubview(subLbl)
+
+        let verPill = KuroBadgePillView(
+            frame: NSRect(x: winW - padX - 52, y: 12, width: 52, height: 20),
+            text: "v\(ver)",
+            bg: KuroUITheme.surfaceMuted,
+            fg: KuroUITheme.secondaryInk
+        )
+        root.addSubview(verPill)
+
+        // MARK: 3-Tab Minimal Segmented Switcher (no emoji)
+        let tabBar = KuroTabBarView(frame: NSRect(x: padX, y: 62, width: cardW, height: 32))
+        tabBar.titles = [
+            tr("外观", "Appearance"),
+            tr("互动", "Interaction"),
+            tr("系统", "System")
+        ]
+        tabBar.selectedIndex = activeTab
+        tabBar.onSelect = { [weak self] idx in
+            self?.activeTab = idx
+            self?.rebuildUI()
+        }
+        root.addSubview(tabBar)
+
+        // MARK: Scrollable Body for Active Tab
+        let bodyY: CGFloat = 106
+        let bodyH: CGFloat = winH - bodyY - 56
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: bodyY, width: winW, height: bodyH))
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
 
-        let doc = FlippedView(frame: NSRect(x: 0, y: 0, width: 492, height: 760))
-        let padX: CGFloat = 18
-        let cardW: CGFloat = 456
-        var y: CGFloat = 14
+        let doc = FlippedView(frame: NSRect(x: 0, y: 0, width: winW, height: bodyH))
+        var y: CGFloat = 4
+        let rowH: CGFloat = 41
 
-        func addSectionHeader(_ text: String) {
-            let lbl = NSTextField(labelWithString: text)
-            lbl.font = .systemFont(ofSize: 12, weight: .semibold)
-            lbl.textColor = .secondaryLabelColor
-            lbl.frame = NSRect(x: padX + 6, y: y, width: cardW - 12, height: 18)
-            doc.addSubview(lbl)
-            y += 22
-        }
-
-        func addCard(rows: Int, rowH: CGFloat = 36, builder: (NSView, CGFloat) -> Void) {
-            let h = CGFloat(rows) * rowH + 8
+        func addCard(rows: Int, builder: (NSView, CGFloat) -> Void) {
+            let h = CGFloat(rows) * rowH + 6
             let card = SettingsCardView(frame: NSRect(x: padX, y: y, width: cardW, height: h))
             builder(card, rowH)
             doc.addSubview(card)
-            y += h + 14
+            y += h + 10
         }
 
         func addRowDivider(_ card: NSView, yPos: CGFloat) {
-            let div = NSBox(frame: NSRect(x: 14, y: yPos, width: cardW - 28, height: 1))
-            div.boxType = .separator
+            let div = NSView(frame: NSRect(x: 16, y: yPos, width: cardW - 32, height: 1))
+            div.wantsLayer = true
+            div.layer?.backgroundColor = KuroUITheme.divider.cgColor
             card.addSubview(div)
         }
 
-        func makeLabel(_ text: String, yPos: CGFloat, width: CGFloat = 240) -> NSTextField {
+        func makeLabel(_ text: String, yPos: CGFloat, width: CGFloat = 260) -> NSTextField {
             let lbl = NSTextField(labelWithString: text)
-            lbl.font = .systemFont(ofSize: 13)
-            lbl.textColor = .labelColor
-            lbl.frame = NSRect(x: 14, y: yPos + 8, width: width, height: 20)
+            lbl.font = .systemFont(ofSize: 13, weight: .regular)
+            lbl.textColor = KuroUITheme.ink
+            lbl.frame = NSRect(x: 16, y: yPos + 11, width: width, height: 19)
             return lbl
         }
 
-        func makeSwitch(_ on: Bool, action: Selector, yPos: CGFloat) -> NSSwitch {
-            let sw = NSSwitch()
-            sw.state = on ? .on : .off
-            sw.target = self
-            sw.action = action
-            sw.controlSize = .small
-            sw.sizeToFit()
-            sw.frame = NSRect(x: cardW - 14 - sw.frame.width, y: yPos + (36 - sw.frame.height) * 0.5, width: sw.frame.width, height: sw.frame.height)
+        func makeSwitch(_ on: Bool, action: Selector, yPos: CGFloat) -> KuroSwitchControl {
+            let sw = KuroSwitchControl(isOn: on, target: self, action: action)
+            sw.frame = NSRect(x: cardW - 16 - 36, y: yPos + (rowH - 20) * 0.5, width: 36, height: 20)
             return sw
         }
 
-        // MARK: Card 1 — Appearance & Orientation
-        addSectionHeader(tr("外观与方向", "Appearance & Orientation"))
-        addCard(rows: 8) { card, rh in
-            // Row 0: Cat Skin + Dressing Room + Rename/Delete buttons (when a custom skin is active)
-            let hasCustomActive = !s.customSkin.isEmpty && SkinLibrary.shared.skin(id: s.customSkin) != nil
-            card.addSubview(makeLabel(tr("猫咪皮肤", "Cat Skin"), yPos: 4, width: 100))
-            skinPopup = NSPopUpButton(frame: NSRect(x: 112, y: 9, width: hasCustomActive ? 148 : 240, height: 24), pullsDown: false)
-            skinIds = []
-            for coat in CatCoatTheme.allCases {
-                skinPopup.addItem(withTitle: s.isEnglish ? englishCoatName(coat) : coat.rawValue)
-                skinIds.append("coat:\(coat.rawValue)")
+        if activeTab == 0 {
+            addCard(rows: 8) { card, rh in
+                // Row 0: Cat Skin + inline Rename / Delete (only when custom skin active)
+                let hasCustomActive = !s.customSkin.isEmpty && SkinLibrary.shared.skin(id: s.customSkin) != nil
+                card.addSubview(makeLabel(tr("猫咪皮肤", "Cat Skin"), yPos: 3, width: 80))
+                let popup = NSPopUpButton(frame: NSRect(x: 104, y: 9, width: hasCustomActive ? 248 : 360, height: 24), pullsDown: false)
+                skinIds = []
+                for coat in CatCoatTheme.allCases {
+                    popup.addItem(withTitle: s.isEnglish ? englishCoatName(coat) : coat.rawValue)
+                    skinIds.append("coat:\(coat.rawValue)")
+                }
+                for sk in SkinLibrary.shared.skins {
+                    popup.addItem(withTitle: SkinLibrary.shared.displayName(for: sk))
+                    skinIds.append("custom:\(sk.id)")
+                }
+                if !s.customSkin.isEmpty, let idx = skinIds.firstIndex(of: "custom:\(s.customSkin)") {
+                    popup.selectItem(at: idx)
+                } else if let idx = skinIds.firstIndex(of: "coat:\(s.coatTheme.rawValue)") {
+                    popup.selectItem(at: idx)
+                }
+                popup.target = self
+                popup.action = #selector(onSkinSelected)
+                card.addSubview(popup)
+                skinPopup = popup
+
+                if hasCustomActive {
+                    card.addSubview(makeBtn(tr("改名", "Rename"), variant: .secondary, action: #selector(onTapRenameSkin), frame: NSRect(x: 358, y: 9, width: 50, height: 24)))
+                    card.addSubview(makeBtn(tr("删除", "Delete"), variant: .danger, action: #selector(onTapDeleteSkin), frame: NSRect(x: 414, y: 9, width: 50, height: 24)))
+                }
+                addRowDivider(card, yPos: 3 + rh)
+
+                // Row 1: Skins Folder path + Choose / Open / Reset
+                let r1 = 3 + rh
+                card.addSubview(makeLabel(tr("皮肤目录", "Skins Dir"), yPos: r1, width: 80))
+                let dirDisplay = (SkinLibrary.directory.path as NSString).abbreviatingWithTildeInPath
+                let dirLbl = NSTextField(labelWithString: dirDisplay)
+                dirLbl.font = .systemFont(ofSize: 11.5)
+                dirLbl.textColor = KuroUITheme.secondaryInk
+                dirLbl.lineBreakMode = .byTruncatingMiddle
+                dirLbl.toolTip = SkinLibrary.directory.path
+                dirLbl.frame = NSRect(x: 104, y: r1 + 12, width: 162, height: 17)
+                card.addSubview(dirLbl)
+                skinsDirLabel = dirLbl
+
+                card.addSubview(makeBtn(tr("更改", "Choose"), variant: .secondary, action: #selector(onTapChooseSkinsDir), frame: NSRect(x: 272, y: r1 + 8, width: 56, height: 24)))
+                card.addSubview(makeBtn(tr("打开", "Open"), variant: .secondary, action: #selector(onTapOpenSkinsDir), frame: NSRect(x: 334, y: r1 + 8, width: 56, height: 24)))
+                let rstDirBtn = makeBtn(tr("默认", "Reset"), variant: .secondary, action: #selector(onTapResetSkinsDir), frame: NSRect(x: 396, y: r1 + 8, width: 68, height: 24))
+                rstDirBtn.isEnabled = SkinLibrary.isUsingCustomDirectory
+                card.addSubview(rstDirBtn)
+                resetSkinsDirBtn = rstDirBtn
+                addRowDivider(card, yPos: r1 + rh)
+
+                // Row 2: Keyboard Theme + Import
+                let r2 = 3 + rh * 2
+                card.addSubview(makeLabel(tr("键盘配色", "Keyboard"), yPos: r2, width: 80))
+                let kbP = NSPopUpButton(frame: NSRect(x: 104, y: r2 + 8, width: 274, height: 24), pullsDown: false)
+                kbIds = []
+                KeyboardSkinLibrary.shared.reload()
+                for kb in KeyboardTheme.allCases {
+                    kbP.addItem(withTitle: s.isEnglish ? englishKBName(kb) : kb.rawValue)
+                    kbIds.append("theme:\(kb.rawValue)")
+                }
+                for kb in KeyboardSkinLibrary.shared.skins {
+                    kbP.addItem(withTitle: kb.name)
+                    kbIds.append("custom:\(kb.id)")
+                }
+                if !s.customKeyboard.isEmpty, let idx = kbIds.firstIndex(of: "custom:\(s.customKeyboard)") {
+                    kbP.selectItem(at: idx)
+                } else if let idx = kbIds.firstIndex(of: "theme:\(s.keyboardTheme.rawValue)") {
+                    kbP.selectItem(at: idx)
+                }
+                kbP.target = self
+                kbP.action = #selector(onKBSelected)
+                card.addSubview(kbP)
+                kbPopup = kbP
+                card.addSubview(makeBtn(tr("导入…", "Import…"), variant: .secondary, action: #selector(onTapImportKB), frame: NSRect(x: 386, y: r2 + 8, width: 78, height: 24)))
+                addRowDivider(card, yPos: r2 + rh)
+
+                // Row 3: Eye Color
+                let r3 = 3 + rh * 3
+                card.addSubview(makeLabel(tr("瞳色", "Eye Color"), yPos: r3, width: 80))
+                let eyeP = NSPopUpButton(frame: NSRect(x: 104, y: r3 + 8, width: 360, height: 24), pullsDown: false)
+                for eye in EyeColorTheme.allCases {
+                    eyeP.addItem(withTitle: s.isEnglish ? englishEyeName(eye) : eye.rawValue)
+                }
+                if let idx = EyeColorTheme.allCases.firstIndex(of: s.eyeTheme) { eyeP.selectItem(at: idx) }
+                eyeP.target = self
+                eyeP.action = #selector(onEyeSelected)
+                card.addSubview(eyeP)
+                eyePopup = eyeP
+                addRowDivider(card, yPos: r3 + rh)
+
+                // Row 4: White Outline toggle
+                let r4 = 3 + rh * 4
+                card.addSubview(makeLabel(tr("白色外描边（贴纸风）", "White Sticker Outline"), yPos: r4, width: 340))
+                let outlineSw = makeSwitch(s.whiteOutline, action: #selector(onToggleWhiteOutline), yPos: r4)
+                card.addSubview(outlineSw)
+                whiteOutlineSwitch = outlineSw
+                addRowDivider(card, yPos: r4 + rh)
+
+                // Row 5: Horizontal Flip toggle
+                let r5 = 3 + rh * 5
+                card.addSubview(makeLabel(tr("水平镜像翻转", "Flip Horizontal"), yPos: r5, width: 340))
+                let flipSw = makeSwitch(s.flipHorizontal, action: #selector(onToggleFlip), yPos: r5)
+                card.addSubview(flipSw)
+                flipSwitch = flipSw
+                addRowDivider(card, yPos: r5 + rh)
+
+                // Row 6: Rotation Angle slider (monochrome track fill matches theme)
+                let r6 = 3 + rh * 6
+                card.addSubview(makeLabel(tr("旋转角度", "Rotation"), yPos: r6, width: 80))
+                let rSl = NSSlider(value: Double(s.rotationDeg), minValue: -180, maxValue: 180, target: self, action: #selector(onRotationChanged))
+                rSl.trackFillColor = KuroUITheme.accent
+                rSl.frame = NSRect(x: 104, y: r6 + 10, width: 226, height: 20)
+                card.addSubview(rSl)
+                rotSlider = rSl
+                let rVal = NSTextField(labelWithString: "\(Int(s.rotationDeg.rounded()))°")
+                rVal.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+                rVal.textColor = KuroUITheme.secondaryInk
+                rVal.alignment = .right
+                rVal.frame = NSRect(x: 334, y: r6 + 11, width: 44, height: 18)
+                card.addSubview(rVal)
+                rotValLabel = rVal
+                card.addSubview(makeBtn(tr("回正 0°", "Reset 0°"), variant: .secondary, action: #selector(onResetRotation), frame: NSRect(x: 386, y: r6 + 8, width: 78, height: 24)))
+                addRowDivider(card, yPos: r6 + rh)
+
+                // Row 7: Scale slider
+                let r7 = 3 + rh * 7
+                card.addSubview(makeLabel(tr("桌宠大小", "Scale"), yPos: r7, width: 80))
+                let sSl = NSSlider(value: Double(s.scale), minValue: 0.45, maxValue: 2.0, target: self, action: #selector(onScaleSliderChanged))
+                sSl.trackFillColor = KuroUITheme.accent
+                sSl.frame = NSRect(x: 104, y: r7 + 10, width: 226, height: 20)
+                card.addSubview(sSl)
+                scaleSlider = sSl
+                let sVal = NSTextField(labelWithString: "\(Int((s.scale * 100).rounded()))%")
+                sVal.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+                sVal.textColor = KuroUITheme.secondaryInk
+                sVal.alignment = .right
+                sVal.frame = NSRect(x: 334, y: r7 + 11, width: 44, height: 18)
+                card.addSubview(sVal)
+                scaleValLabel = sVal
+                card.addSubview(makeBtn(tr("重置位置", "Reset"), variant: .secondary, action: #selector(onTapResetPose), frame: NSRect(x: 386, y: r7 + 8, width: 78, height: 24)))
             }
-            for sk in SkinLibrary.shared.skins {
-                skinPopup.addItem(withTitle: SkinLibrary.shared.displayName(for: sk))
-                skinIds.append("custom:\(sk.id)")
+        } else if activeTab == 1 {
+            addCard(rows: 10) { card, rh in
+                card.addSubview(makeLabel(tr("拎起拖拽动画", "Scruff-Drag Lift Animation"), yPos: 3, width: 360))
+                let dragSw = makeSwitch(s.enableDragAnimation, action: #selector(onToggleDragAnim), yPos: 3)
+                card.addSubview(dragSw); dragAnimSwitch = dragSw
+                addRowDivider(card, yPos: 3 + rh)
+
+                let r1 = 3 + rh
+                card.addSubview(makeLabel(tr("打字过快时生气表情", "Angry Expression on Fast Typing"), yPos: r1, width: 360))
+                let angerSw = makeSwitch(s.enableAnger, action: #selector(onToggleAnger), yPos: r1)
+                card.addSubview(angerSw); angerSwitch = angerSw
+                addRowDivider(card, yPos: r1 + rh)
+
+                let r2 = 3 + rh * 2
+                card.addSubview(makeLabel(tr("显示按键气泡", "Show Keyboard Key Badges"), yPos: r2, width: 360))
+                let badgesSw = makeSwitch(s.showKeyBadges, action: #selector(onToggleBadges), yPos: r2)
+                card.addSubview(badgesSw); badgesSwitch = badgesSw
+                addRowDivider(card, yPos: r2 + rh)
+
+                let r3 = 3 + rh * 3
+                card.addSubview(makeLabel(tr("显示鼠标点击提示", "Show Mouse Click Badges"), yPos: r3, width: 360))
+                let mBadgesSw = makeSwitch(s.showMouseBadges, action: #selector(onToggleMouseBadges), yPos: r3)
+                card.addSubview(mBadgesSw); mouseBadgesSwitch = mBadgesSw
+                addRowDivider(card, yPos: r3 + rh)
+
+                let r4 = 3 + rh * 4
+                card.addSubview(makeLabel(tr("多键打字方式", "Multi-Key Typing"), yPos: r4, width: 120))
+                let limbP = NSPopUpButton(frame: NSRect(x: 144, y: r4 + 8, width: 320, height: 24), pullsDown: false)
+                limbP.addItems(withTitles: [
+                    tr("后脚 + 尾巴（3键后脚 / 4键尾巴）", "Hind Foot + Tail (3-Key / 4-Key)"),
+                    tr("仅后脚打字", "3rd Hind Foot Only"),
+                    tr("仅尾巴打字", "Tail Typing Only"),
+                    tr("仅两只前爪打字", "Two Front Paws Only")
+                ])
+                let limbIdx: Int = s.footEasterEgg ? (s.tailEasterEgg ? 0 : 1) : (s.tailEasterEgg ? 2 : 3)
+                limbP.selectItem(at: limbIdx)
+                limbP.target = self
+                limbP.action = #selector(onTypingLimbSelected)
+                card.addSubview(limbP); typingLimbPopup = limbP
+                addRowDivider(card, yPos: r4 + rh)
+
+                let r5 = 3 + rh * 5
+                card.addSubview(makeLabel(tr("显示键盘字符", "Show Keycap Legends"), yPos: r5, width: 360))
+                let legSw = makeSwitch(s.showKeyLegends, action: #selector(onToggleLegends), yPos: r5)
+                card.addSubview(legSw); legendsSwitch = legSw
+                addRowDivider(card, yPos: r5 + rh)
+
+                let r6 = 3 + rh * 6
+                card.addSubview(makeLabel(tr("键盘跑马灯流光", "Keyboard RGB Marquee"), yPos: r6, width: 360))
+                let marqSw = makeSwitch(s.keyboardMarquee, action: #selector(onToggleMarquee), yPos: r6)
+                card.addSubview(marqSw); marqueeSwitch = marqSw
+                addRowDivider(card, yPos: r6 + rh)
+
+                let r7 = 3 + rh * 7
+                card.addSubview(makeLabel(tr("跑马灯模式", "Marquee Mode"), yPos: r7, width: 120))
+                let mmP = NSPopUpButton(frame: NSRect(x: 144, y: r7 + 8, width: 320, height: 24), pullsDown: false)
+                mmP.addItems(withTitles: Self.marqueeModeTitles())
+                mmP.selectItem(at: KeyboardMarqueeMode.allCases.firstIndex(of: s.marqueeMode) ?? 0)
+                mmP.target = self
+                mmP.action = #selector(onMarqueeModeSelected)
+                mmP.isEnabled = s.keyboardMarquee
+                card.addSubview(mmP); marqueeModePopup = mmP
+                addRowDivider(card, yPos: r7 + rh)
+
+                let r8 = 3 + rh * 8
+                card.addSubview(makeLabel(tr("键盘水平摆放", "Level Keyboard"), yPos: r8, width: 360))
+                let lvlSw = makeSwitch(s.levelKeyboard, action: #selector(onToggleLevelKeyboard), yPos: r8)
+                card.addSubview(lvlSw); levelKeyboardSwitch = lvlSw
+                addRowDivider(card, yPos: r8 + rh)
+
+                let r9 = 3 + rh * 9
+                card.addSubview(makeLabel(tr("数位板与触控笔", "Tablet & Stylus"), yPos: r9, width: 120))
+                let tabP = NSPopUpButton(frame: NSRect(x: 144, y: r9 + 8, width: 320, height: 24), pullsDown: false)
+                tabP.addItems(withTitles: [
+                    tr("自动检测", "Auto-Detect"),
+                    tr("始终显示数位板", "Always Show Tablet"),
+                    tr("始终显示鼠标", "Always Show Mouse")
+                ])
+                tabP.selectItem(at: max(0, min(2, s.tabletMode)))
+                tabP.target = self
+                tabP.action = #selector(onTabletSelected)
+                card.addSubview(tabP); tabletPopup = tabP
             }
-            if !s.customSkin.isEmpty, let idx = skinIds.firstIndex(of: "custom:\(s.customSkin)") {
-                skinPopup.selectItem(at: idx)
-            } else if let idx = skinIds.firstIndex(of: "coat:\(s.coatTheme.rawValue)") {
-                skinPopup.selectItem(at: idx)
+        } else {
+            addCard(rows: 9) { card, rh in
+                card.addSubview(makeLabel(tr("全屏应用上方置顶显示", "Always On Top Over Fullscreen"), yPos: 3, width: 360))
+                let fsSw = makeSwitch(s.fullScreenOverlay, action: #selector(onToggleFullscreenOverlay), yPos: 3)
+                card.addSubview(fsSw); fullscreenOverlaySwitch = fsSw
+                addRowDivider(card, yPos: 3 + rh)
+
+                let r1 = 3 + rh
+                card.addSubview(makeLabel(tr("完全鼠标穿透（按住 ⌥Option 拖动）", "Full Click-Through (Hold ⌥Option)"), yPos: r1, width: 360))
+                let ctSw = makeSwitch(s.fullClickThrough, action: #selector(onToggleClickThrough), yPos: r1)
+                card.addSubview(ctSw); clickThroughSwitch = ctSw
+                addRowDivider(card, yPos: r1 + rh)
+
+                let r2 = 3 + rh * 2
+                card.addSubview(makeLabel(tr("全屏应用时自动隐藏", "Auto-Hide in Fullscreen Apps"), yPos: r2, width: 360))
+                let ahSw = makeSwitch(s.autoHideFullscreen, action: #selector(onToggleAutoHide), yPos: r2)
+                card.addSubview(ahSw); autoHideSwitch = ahSw
+                addRowDivider(card, yPos: r2 + rh)
+
+                let r3 = 3 + rh * 3
+                card.addSubview(makeLabel(tr("OBS 直播捕获", "OBS Capture"), yPos: r3, width: 120))
+                let obsP = NSPopUpButton(frame: NSRect(x: 144, y: r3 + 8, width: 320, height: 24), pullsDown: false)
+                obsP.addItems(withTitles: [
+                    tr("关闭（正常悬浮）", "Off (Normal Overlay)"),
+                    tr("OBS 透明窗口捕获", "OBS Transparent Window"),
+                    tr("OBS 绿幕模式 (#00FF00)", "OBS Green Screen (#00FF00)")
+                ])
+                obsP.selectItem(at: max(0, min(2, s.obsCaptureMode)))
+                obsP.target = self
+                obsP.action = #selector(onOBSSelected)
+                card.addSubview(obsP); obsPopup = obsP
+                addRowDivider(card, yPos: r3 + rh)
+
+                let r4 = 3 + rh * 4
+                card.addSubview(makeLabel(tr("OBS 后台捕获（隐藏桌面小猫）", "OBS Background Capture"), yPos: r4, width: 360))
+                let ohSw = makeSwitch(s.obsHideDesktop, action: #selector(onToggleOBSHide), yPos: r4)
+                ohSw.isEnabled = (s.obsCaptureMode > 0)
+                card.addSubview(ohSw); obsHideSwitch = ohSw
+                addRowDivider(card, yPos: r4 + rh)
+
+                let r5 = 3 + rh * 5
+                card.addSubview(makeLabel(tr("开机自动启动", "Launch at Login"), yPos: r5, width: 360))
+                let asSw = makeSwitch(getAutoStart?() ?? false, action: #selector(onToggleAutoStart), yPos: r5)
+                card.addSubview(asSw); autoStartSwitch = asSw
+                addRowDivider(card, yPos: r5 + rh)
+
+                let r6 = 3 + rh * 6
+                card.addSubview(makeLabel(tr("整点猫头报时", "Hourly Announcement"), yPos: r6, width: 360))
+                let hrSw = makeSwitch(s.hourlyAnnouncement, action: #selector(onToggleHourlyAnnouncement), yPos: r6)
+                card.addSubview(hrSw); hourlySwitch = hrSw
+                addRowDivider(card, yPos: r6 + rh)
+
+                let r7 = 3 + rh * 7
+                card.addSubview(makeLabel(tr("听歌自动戴耳机", "Auto Headphones on Music"), yPos: r7, width: 360))
+                let hpSw = makeSwitch(s.autoHeadphonesOnMusic, action: #selector(onToggleAutoHeadphones), yPos: r7)
+                card.addSubview(hpSw); autoHeadphonesSwitch = hpSw
+                addRowDivider(card, yPos: r7 + rh)
+
+                let r8 = 3 + rh * 8
+                card.addSubview(makeLabel("语言 / Language", yPos: r8, width: 160))
+                let lgSeg = NSSegmentedControl(labels: ["简体中文", "English"], trackingMode: .selectOne, target: self, action: #selector(onLangChanged))
+                lgSeg.selectedSegment = s.isEnglish ? 1 : 0
+                lgSeg.frame = NSRect(x: cardW - 16 - 160, y: r8 + 8, width: 160, height: 24)
+                card.addSubview(lgSeg); langSeg = lgSeg
             }
-            skinPopup.target = self
-            skinPopup.action = #selector(onSkinSelected)
-            card.addSubview(skinPopup)
-
-            if hasCustomActive {
-                let dressBtn = NSButton(title: tr("换装间…", "Skins…"), target: self, action: #selector(onTapDressingRoom))
-                dressBtn.bezelStyle = .rounded
-                dressBtn.controlSize = .small
-                dressBtn.frame = NSRect(x: 264, y: 10, width: 64, height: 22)
-                card.addSubview(dressBtn)
-
-                let renameBtn = NSButton(title: tr("✏️改名", "✏️"), target: self, action: #selector(onTapRenameSkin))
-                renameBtn.bezelStyle = .rounded
-                renameBtn.controlSize = .small
-                renameBtn.frame = NSRect(x: 332, y: 10, width: 52, height: 22)
-                card.addSubview(renameBtn)
-
-                let delBtn = NSButton(title: tr("🗑删除", "🗑Del"), target: self, action: #selector(onTapDeleteSkin))
-                delBtn.bezelStyle = .rounded
-                delBtn.controlSize = .small
-                delBtn.contentTintColor = .systemRed
-                if #available(macOS 11.0, *) { delBtn.hasDestructiveAction = true }
-                delBtn.frame = NSRect(x: 388, y: 10, width: 56, height: 22)
-                card.addSubview(delBtn)
-            } else {
-                let dressBtn = NSButton(title: tr("换装间…", "Skins…"), target: self, action: #selector(onTapDressingRoom))
-                dressBtn.bezelStyle = .rounded
-                dressBtn.controlSize = .small
-                dressBtn.frame = NSRect(x: 358, y: 10, width: 84, height: 22)
-                card.addSubview(dressBtn)
-            }
-            addRowDivider(card, yPos: 4 + rh)
-
-            // Row 1: Skins Folder path + Choose / Open / Reset
-            let r1 = 4 + rh
-            card.addSubview(makeLabel(tr("皮肤目录", "Skins Dir"), yPos: r1, width: 66))
-            let dirDisplay = (SkinLibrary.directory.path as NSString).abbreviatingWithTildeInPath
-            skinsDirLabel = NSTextField(labelWithString: dirDisplay)
-            skinsDirLabel.font = .systemFont(ofSize: 11.5)
-            skinsDirLabel.textColor = .secondaryLabelColor
-            skinsDirLabel.lineBreakMode = .byTruncatingMiddle
-            skinsDirLabel.toolTip = SkinLibrary.directory.path
-            skinsDirLabel.frame = NSRect(x: 84, y: r1 + 10, width: 138, height: 17)
-            card.addSubview(skinsDirLabel)
-
-            let chooseDirBtn = NSButton(title: tr("选择文件夹…", "Choose…"), target: self, action: #selector(onTapChooseSkinsDir))
-            chooseDirBtn.bezelStyle = .rounded
-            chooseDirBtn.controlSize = .small
-            chooseDirBtn.frame = NSRect(x: 226, y: r1 + 7, width: 96, height: 22)
-            card.addSubview(chooseDirBtn)
-
-            let openDirBtn = NSButton(title: tr("打开", "Open"), target: self, action: #selector(onTapOpenSkinsDir))
-            openDirBtn.bezelStyle = .rounded
-            openDirBtn.controlSize = .small
-            openDirBtn.frame = NSRect(x: 326, y: r1 + 7, width: 46, height: 22)
-            card.addSubview(openDirBtn)
-
-            resetSkinsDirBtn = NSButton(title: tr("恢复默认", "Reset"), target: self, action: #selector(onTapResetSkinsDir))
-            resetSkinsDirBtn.bezelStyle = .rounded
-            resetSkinsDirBtn.controlSize = .small
-            resetSkinsDirBtn.isEnabled = SkinLibrary.isUsingCustomDirectory
-            resetSkinsDirBtn.frame = NSRect(x: 376, y: r1 + 7, width: 66, height: 22)
-            card.addSubview(resetSkinsDirBtn)
-            addRowDivider(card, yPos: r1 + rh)
-
-            // Row 2: Keyboard Theme + Import button
-            let r2 = 4 + rh * 2
-            card.addSubview(makeLabel(tr("键盘配色", "Keyboard Theme"), yPos: r2, width: 110))
-            kbPopup = NSPopUpButton(frame: NSRect(x: 130, y: r2 + 5, width: 222, height: 24), pullsDown: false)
-            kbIds = []
-            KeyboardSkinLibrary.shared.reload()
-            for kb in KeyboardTheme.allCases {
-                kbPopup.addItem(withTitle: s.isEnglish ? englishKBName(kb) : kb.rawValue)
-                kbIds.append("theme:\(kb.rawValue)")
-            }
-            for kb in KeyboardSkinLibrary.shared.skins {
-                kbPopup.addItem(withTitle: kb.name)
-                kbIds.append("custom:\(kb.id)")
-            }
-            if !s.customKeyboard.isEmpty, let idx = kbIds.firstIndex(of: "custom:\(s.customKeyboard)") {
-                kbPopup.selectItem(at: idx)
-            } else if let idx = kbIds.firstIndex(of: "theme:\(s.keyboardTheme.rawValue)") {
-                kbPopup.selectItem(at: idx)
-            }
-            kbPopup.target = self
-            kbPopup.action = #selector(onKBSelected)
-            card.addSubview(kbPopup)
-
-            let kbBtn = NSButton(title: tr("导入…", "Import…"), target: self, action: #selector(onTapImportKB))
-            kbBtn.bezelStyle = .rounded
-            kbBtn.controlSize = .small
-            kbBtn.frame = NSRect(x: 358, y: r2 + 6, width: 84, height: 22)
-            card.addSubview(kbBtn)
-            addRowDivider(card, yPos: r2 + rh)
-
-            // Row 3: Eye Color
-            let r3 = 4 + rh * 3
-            card.addSubview(makeLabel(tr("瞳色切换", "Eye Color"), yPos: r3, width: 110))
-            eyePopup = NSPopUpButton(frame: NSRect(x: 130, y: r3 + 5, width: 312, height: 24), pullsDown: false)
-            for eye in EyeColorTheme.allCases {
-                eyePopup.addItem(withTitle: s.isEnglish ? englishEyeName(eye) : eye.rawValue)
-            }
-            if let idx = EyeColorTheme.allCases.firstIndex(of: s.eyeTheme) { eyePopup.selectItem(at: idx) }
-            eyePopup.target = self
-            eyePopup.action = #selector(onEyeSelected)
-            card.addSubview(eyePopup)
-            addRowDivider(card, yPos: r3 + rh)
-
-            // Row 4: White Outline toggle
-            let r4 = 4 + rh * 4
-            card.addSubview(makeLabel(tr("小猫白色外描边（贴纸风）", "White Sticker Outline"), yPos: r4, width: 320))
-            whiteOutlineSwitch = makeSwitch(s.whiteOutline, action: #selector(onToggleWhiteOutline), yPos: r4)
-            card.addSubview(whiteOutlineSwitch)
-            addRowDivider(card, yPos: r4 + rh)
-
-            // Row 5: Horizontal Flip toggle
-            let r5 = 4 + rh * 5
-            card.addSubview(makeLabel(tr("水平镜像翻转（左右朝向）", "Flip Horizontal"), yPos: r5, width: 320))
-            flipSwitch = makeSwitch(s.flipHorizontal, action: #selector(onToggleFlip), yPos: r5)
-            card.addSubview(flipSwitch)
-            addRowDivider(card, yPos: r5 + rh)
-
-            // Row 6: Rotation Angle slider + Reset 0°
-            let r6 = 4 + rh * 6
-            card.addSubview(makeLabel(tr("旋转方向", "Rotation"), yPos: r6, width: 96))
-            rotSlider = NSSlider(value: Double(s.rotationDeg), minValue: -180, maxValue: 180, target: self, action: #selector(onRotationChanged))
-            rotSlider.frame = NSRect(x: 112, y: r6 + 8, width: 204, height: 20)
-            card.addSubview(rotSlider)
-            rotValLabel = NSTextField(labelWithString: "\(Int(s.rotationDeg.rounded()))°")
-            rotValLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-            rotValLabel.textColor = .secondaryLabelColor
-            rotValLabel.alignment = .right
-            rotValLabel.frame = NSRect(x: 320, y: r6 + 9, width: 42, height: 18)
-            card.addSubview(rotValLabel)
-            let zeroBtn = NSButton(title: tr("回正", "0°"), target: self, action: #selector(onResetRotation))
-            zeroBtn.bezelStyle = .rounded
-            zeroBtn.controlSize = .small
-            zeroBtn.frame = NSRect(x: 368, y: r6 + 7, width: 74, height: 22)
-            card.addSubview(zeroBtn)
-            addRowDivider(card, yPos: r6 + rh)
-
-            // Row 7: Scale slider + Reset Pose & Position
-            let r7 = 4 + rh * 7
-            card.addSubview(makeLabel(tr("桌宠大小", "Scale"), yPos: r7, width: 96))
-            scaleSlider = NSSlider(value: Double(s.scale), minValue: 0.45, maxValue: 2.0, target: self, action: #selector(onScaleSliderChanged))
-            scaleSlider.frame = NSRect(x: 112, y: r7 + 8, width: 204, height: 20)
-            card.addSubview(scaleSlider)
-            scaleValLabel = NSTextField(labelWithString: "\(Int((s.scale * 100).rounded()))%")
-            scaleValLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-            scaleValLabel.textColor = .secondaryLabelColor
-            scaleValLabel.alignment = .right
-            scaleValLabel.frame = NSRect(x: 320, y: r7 + 9, width: 42, height: 18)
-            card.addSubview(scaleValLabel)
-            let resetAllBtn = NSButton(title: tr("重置位置", "Reset"), target: self, action: #selector(onTapResetPose))
-            resetAllBtn.bezelStyle = .rounded
-            resetAllBtn.controlSize = .small
-            resetAllBtn.frame = NSRect(x: 368, y: r7 + 7, width: 74, height: 22)
-            card.addSubview(resetAllBtn)
         }
 
-        // MARK: Card 2 — Interaction & Effects
-        addSectionHeader(tr("互动与特效", "Interaction & Effects"))
-        addCard(rows: 9) { card, rh in
-            // Row 0: Scruff-drag animation toggle
-            card.addSubview(makeLabel(tr("拎起拖拽动画（拖动时切换拎起姿态）", "Scruff-Drag Lift Animation"), yPos: 4, width: 320))
-            dragAnimSwitch = makeSwitch(s.enableDragAnimation, action: #selector(onToggleDragAnim), yPos: 4)
-            card.addSubview(dragAnimSwitch)
-            addRowDivider(card, yPos: 4 + rh)
-
-            // Row 1: Fast-typing anger toggle
-            let r1 = 4 + rh
-            card.addSubview(makeLabel(tr("打字过快时生气表情", "Angry Expression on Fast Typing"), yPos: r1, width: 320))
-            angerSwitch = makeSwitch(s.enableAnger, action: #selector(onToggleAnger), yPos: r1)
-            card.addSubview(angerSwitch)
-            addRowDivider(card, yPos: r1 + rh)
-
-            // Row 2: Key badges
-            let r2 = 4 + rh * 2
-            card.addSubview(makeLabel(tr("显示按键气泡 ([S] [W] [⇧])", "Show Keyboard Key Badges"), yPos: r2, width: 320))
-            badgesSwitch = makeSwitch(s.showKeyBadges, action: #selector(onToggleBadges), yPos: r2)
-            card.addSubview(badgesSwitch)
-            addRowDivider(card, yPos: r2 + rh)
-
-            // Row 3: Mouse click badges
-            let r3 = 4 + rh * 3
-            card.addSubview(makeLabel(tr("显示鼠标点击 (左键 / 右键)", "Show Mouse Click Badges"), yPos: r3, width: 320))
-            mouseBadgesSwitch = makeSwitch(s.showMouseBadges, action: #selector(onToggleMouseBadges), yPos: r3)
-            card.addSubview(mouseBadgesSwitch)
-            addRowDivider(card, yPos: r3 + rh)
-
-            // Row 4: Multi-key typing limb mode (3rd hind foot / tail / two paws only)
-            let r4 = 4 + rh * 4
-            card.addSubview(makeLabel(tr("多键打字方式", "Multi-Key Typing"), yPos: r4, width: 130))
-            typingLimbPopup = NSPopUpButton(frame: NSRect(x: 150, y: r4 + 5, width: 292, height: 24), pullsDown: false)
-            typingLimbPopup.addItems(withTitles: [
-                tr("后脚 + 尾巴（3键后脚 / 4键尾巴）", "Hind Foot + Tail (3-Key / 4-Key)"),
-                tr("用第三只脚打字（仅后脚）", "3rd Hind Foot Only"),
-                tr("用尾巴打字（仅尾巴）", "Tail Typing Only"),
-                tr("只用两只爪爪打字", "Two Front Paws Only")
-            ])
-            let limbIdx: Int = s.footEasterEgg
-                ? (s.tailEasterEgg ? 0 : 1)
-                : (s.tailEasterEgg ? 2 : 3)
-            typingLimbPopup.selectItem(at: limbIdx)
-            typingLimbPopup.target = self
-            typingLimbPopup.action = #selector(onTypingLimbSelected)
-            card.addSubview(typingLimbPopup)
-            addRowDivider(card, yPos: r4 + rh)
-
-            // Row 5: Key legends
-            let r5 = 4 + rh * 5
-            card.addSubview(makeLabel(tr("显示键盘字符", "Show Keycap Legends"), yPos: r5, width: 320))
-            legendsSwitch = makeSwitch(s.showKeyLegends, action: #selector(onToggleLegends), yPos: r5)
-            card.addSubview(legendsSwitch)
-            addRowDivider(card, yPos: r5 + rh)
-
-            // Row 6: Keyboard marquee
-            let r6 = 4 + rh * 6
-            card.addSubview(makeLabel(tr("键盘跑马灯流光", "Keyboard RGB Marquee"), yPos: r6, width: 320))
-            marqueeSwitch = makeSwitch(s.keyboardMarquee, action: #selector(onToggleMarquee), yPos: r6)
-            card.addSubview(marqueeSwitch)
-            addRowDivider(card, yPos: r6 + rh)
-
-            // Row 7: Level keyboard (parallel to screen)
-            let r7 = 4 + rh * 7
-            card.addSubview(makeLabel(tr("键盘水平摆放（平行屏幕）", "Level Keyboard (Parallel to Screen)"), yPos: r7, width: 320))
-            levelKeyboardSwitch = makeSwitch(s.levelKeyboard, action: #selector(onToggleLevelKeyboard), yPos: r7)
-            card.addSubview(levelKeyboardSwitch)
-            addRowDivider(card, yPos: r7 + rh)
-
-            // Row 8: Drawing Tablet & Stylus
-            let r8 = 4 + rh * 8
-            card.addSubview(makeLabel(tr("数位板与触控笔", "Tablet & Stylus"), yPos: r8, width: 130))
-            tabletPopup = NSPopUpButton(frame: NSRect(x: 150, y: r8 + 5, width: 292, height: 24), pullsDown: false)
-            tabletPopup.addItems(withTitles: [
-                tr("自动检测（连接数位板时切换）", "Auto-Detect When Connected"),
-                tr("始终显示数位板与触控笔", "Always Show Tablet & Stylus"),
-                tr("始终显示鼠标", "Always Show Mouse")
-            ])
-            tabletPopup.selectItem(at: max(0, min(2, s.tabletMode)))
-            tabletPopup.target = self
-            tabletPopup.action = #selector(onTabletSelected)
-            card.addSubview(tabletPopup)
-        }
-
-        // MARK: Card 3 — Window & System
-        addSectionHeader(tr("窗口与系统", "Window & System"))
-        addCard(rows: 8) { card, rh in
-            // Row 0: Fullscreen topmost
-            card.addSubview(makeLabel(tr("全屏游戏/应用置顶显示", "Always On Top Over Fullscreen"), yPos: 4, width: 320))
-            fullscreenOverlaySwitch = makeSwitch(s.fullScreenOverlay, action: #selector(onToggleFullscreenOverlay), yPos: 4)
-            card.addSubview(fullscreenOverlaySwitch)
-            addRowDivider(card, yPos: 4 + rh)
-
-            // Row 1: Full click-through
-            let r1 = 4 + rh
-            card.addSubview(makeLabel(tr("完全鼠标穿透（按住 ⌥Option 临时拖动）", "Full Click-Through (Hold ⌥Option)"), yPos: r1, width: 340))
-            clickThroughSwitch = makeSwitch(s.fullClickThrough, action: #selector(onToggleClickThrough), yPos: r1)
-            card.addSubview(clickThroughSwitch)
-            addRowDivider(card, yPos: r1 + rh)
-
-            // Row 2: Auto-hide in fullscreen
-            let r2 = 4 + rh * 2
-            card.addSubview(makeLabel(tr("全屏应用时自动隐藏", "Auto-Hide in Fullscreen Apps"), yPos: r2, width: 320))
-            autoHideSwitch = makeSwitch(s.autoHideFullscreen, action: #selector(onToggleAutoHide), yPos: r2)
-            card.addSubview(autoHideSwitch)
-            addRowDivider(card, yPos: r2 + rh)
-
-            // Row 3: OBS Capture Mode
-            let r3 = 4 + rh * 3
-            card.addSubview(makeLabel(tr("直播捕获模式 (OBS)", "OBS Capture Mode"), yPos: r3, width: 150))
-            obsPopup = NSPopUpButton(frame: NSRect(x: 170, y: r3 + 5, width: 272, height: 24), pullsDown: false)
-            obsPopup.addItems(withTitles: [
-                tr("关闭（正常桌面悬浮）", "Off (Normal Overlay)"),
-                tr("OBS 透明窗口捕获", "OBS Transparent Window"),
-                tr("OBS 绿幕模式 (#00FF00)", "OBS Green Screen (#00FF00)")
-            ])
-            obsPopup.selectItem(at: max(0, min(2, s.obsCaptureMode)))
-            obsPopup.target = self
-            obsPopup.action = #selector(onOBSSelected)
-            card.addSubview(obsPopup)
-            addRowDivider(card, yPos: r3 + rh)
-
-            // Row 4: OBS Hide Desktop
-            let r4 = 4 + rh * 4
-            card.addSubview(makeLabel(tr("OBS 后台捕获（隐藏桌面小猫）", "OBS Background Capture (Hide Desktop)"), yPos: r4, width: 320))
-            obsHideSwitch = makeSwitch(s.obsHideDesktop, action: #selector(onToggleOBSHide), yPos: r4)
-            obsHideSwitch.isEnabled = (s.obsCaptureMode > 0)
-            card.addSubview(obsHideSwitch)
-            addRowDivider(card, yPos: r4 + rh)
-
-            // Row 5: Launch at Login
-            let r5 = 4 + rh * 5
-            card.addSubview(makeLabel(tr("开机自动启动", "Launch at Login"), yPos: r5, width: 320))
-            autoStartSwitch = makeSwitch(getAutoStart?() ?? false, action: #selector(onToggleAutoStart), yPos: r5)
-            card.addSubview(autoStartSwitch)
-            addRowDivider(card, yPos: r5 + rh)
-
-            // Row 6: Hourly Announcement
-            let r6 = 4 + rh * 6
-            card.addSubview(makeLabel(tr("整点猫头报时（HH:00 弹框提示）", "Hourly Head-Toast Announcement (HH:00)"), yPos: r6, width: 340))
-            hourlySwitch = makeSwitch(s.hourlyAnnouncement, action: #selector(onToggleHourlyAnnouncement), yPos: r6)
-            card.addSubview(hourlySwitch)
-            addRowDivider(card, yPos: r6 + rh)
-
-            // Row 7: Language
-            let r7 = 4 + rh * 7
-            card.addSubview(makeLabel("语言 / Language", yPos: r7, width: 180))
-            langSeg = NSSegmentedControl(labels: ["简体中文", "English"], trackingMode: .selectOne, target: self, action: #selector(onLangChanged))
-            langSeg.selectedSegment = s.isEnglish ? 1 : 0
-            langSeg.frame = NSRect(x: cardW - 14 - 166, y: r7 + 6, width: 166, height: 24)
-            card.addSubview(langSeg)
-        }
-
-        doc.frame = NSRect(x: 0, y: 0, width: 492, height: y + 8)
+        doc.frame = NSRect(x: 0, y: 0, width: winW, height: max(bodyH, y + 6))
         scroll.documentView = doc
-        win.contentView = scroll
+        root.addSubview(scroll)
+
+        // MARK: Clean Bottom Action Bar (no emoji)
+        let footerLine = NSView(frame: NSRect(x: padX, y: winH - 50, width: cardW, height: 1))
+        footerLine.wantsLayer = true
+        footerLine.layer?.backgroundColor = KuroUITheme.divider.cgColor
+        root.addSubview(footerLine)
+
+        let batchBtnTitle = customCount > 0
+            ? tr("批量删除皮肤 (\(customCount))", "Batch Delete (\(customCount))")
+            : tr("批量删除皮肤", "Batch Delete")
+        let batchBtn = makeBtn(
+            batchBtnTitle,
+            variant: customCount > 0 ? .danger : .secondary,
+            action: #selector(onTapSkinManager),
+            frame: NSRect(x: padX, y: winH - 40, width: 148, height: 28),
+            fontSize: 12
+        )
+        batchBtn.isEnabled = (customCount > 0)
+        root.addSubview(batchBtn)
+
+        let importFooterBtn = makeBtn(
+            tr("导入皮肤…", "Import Skin…"),
+            variant: .primary,
+            action: #selector(onTapDressingRoom),
+            frame: NSRect(x: winW - padX - 128, y: winH - 40, width: 128, height: 28),
+            fontSize: 12
+        )
+        root.addSubview(importFooterBtn)
+
+        win.contentView = root
     }
 
     private func englishCoatName(_ coat: CatCoatTheme) -> String {
@@ -1732,7 +2133,8 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func onSkinSelected() {
-        let idx = skinPopup.indexOfSelectedItem
+        guard let popup = skinPopup else { return }
+        let idx = popup.indexOfSelectedItem
         guard idx >= 0 && idx < skinIds.count else { return }
         let token = skinIds[idx]
         if token.hasPrefix("custom:") {
@@ -1751,7 +2153,7 @@ final class SettingsWindowController: NSWindowController {
             case .pikachu: CatSettings.shared.eyeTheme = .warmAmber
             }
             if let eIdx = EyeColorTheme.allCases.firstIndex(of: CatSettings.shared.eyeTheme) {
-                eyePopup.selectItem(at: eIdx)
+                eyePopup?.selectItem(at: eIdx)
             }
         }
         onSettingsChanged?()
@@ -1770,8 +2172,13 @@ final class SettingsWindowController: NSWindowController {
         onDeleteSkin?(id)
     }
 
+    @objc private func onTapSkinManager() {
+        onOpenSkinManager?()
+    }
+
     @objc private func onKBSelected() {
-        let idx = kbPopup.indexOfSelectedItem
+        guard let popup = kbPopup else { return }
+        let idx = popup.indexOfSelectedItem
         guard idx >= 0 && idx < kbIds.count else { return }
         let token = kbIds[idx]
         if token.hasPrefix("custom:") {
@@ -1784,45 +2191,49 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func onEyeSelected() {
-        let idx = eyePopup.indexOfSelectedItem
+        guard let popup = eyePopup else { return }
+        let idx = popup.indexOfSelectedItem
         guard idx >= 0 && idx < EyeColorTheme.allCases.count else { return }
         CatSettings.shared.overrideSkinIris = true
         CatSettings.shared.eyeTheme = EyeColorTheme.allCases[idx]
         onSettingsChanged?()
+        rebuildUI()
     }
 
     @objc private func onToggleWhiteOutline() {
-        CatSettings.shared.whiteOutline = (whiteOutlineSwitch.state == .on)
+        CatSettings.shared.whiteOutline = (whiteOutlineSwitch?.isOn == true)
         onSettingsChanged?()
     }
 
     @objc private func onToggleFlip() {
-        CatSettings.shared.flipHorizontal = (flipSwitch.state == .on)
+        CatSettings.shared.flipHorizontal = (flipSwitch?.isOn == true)
         UserDefaults.standard.synchronize()
         onSettingsChanged?()
     }
 
     @objc private func onRotationChanged() {
-        var deg = CGFloat(rotSlider.doubleValue)
+        guard let sl = rotSlider else { return }
+        var deg = CGFloat(sl.doubleValue)
         for snap in [-180.0, -90.0, 0.0, 90.0, 180.0] as [CGFloat] {
             if abs(deg - snap) < 4.0 { deg = snap; break }
         }
         CatSettings.shared.rotationDeg = deg
-        rotValLabel.stringValue = "\(Int(deg.rounded()))°"
+        rotValLabel?.stringValue = "\(Int(deg.rounded()))°"
         onSettingsChanged?()
     }
 
     @objc private func onResetRotation() {
         CatSettings.shared.rotationDeg = 0
-        rotSlider.doubleValue = 0
-        rotValLabel.stringValue = "0°"
+        rotSlider?.doubleValue = 0
+        rotValLabel?.stringValue = "0°"
         UserDefaults.standard.synchronize()
         onSettingsChanged?()
     }
 
     @objc private func onScaleSliderChanged() {
-        let sc = CGFloat(scaleSlider.doubleValue)
-        scaleValLabel.stringValue = "\(Int((sc * 100).rounded()))%"
+        guard let sl = scaleSlider else { return }
+        let sc = CGFloat(sl.doubleValue)
+        scaleValLabel?.stringValue = "\(Int((sc * 100).rounded()))%"
         onScaleChanged?(sc)
     }
 
@@ -1872,93 +2283,487 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func onToggleDragAnim() {
-        CatSettings.shared.enableDragAnimation = (dragAnimSwitch.state == .on)
+        CatSettings.shared.enableDragAnimation = (dragAnimSwitch?.isOn == true)
         onSettingsChanged?()
     }
 
     @objc private func onToggleAnger() {
-        CatSettings.shared.enableAnger = (angerSwitch.state == .on)
+        CatSettings.shared.enableAnger = (angerSwitch?.isOn == true)
         onSettingsChanged?()
     }
 
     @objc private func onToggleBadges() {
-        CatSettings.shared.showKeyBadges = (badgesSwitch.state == .on)
+        CatSettings.shared.showKeyBadges = (badgesSwitch?.isOn == true)
         onSettingsChanged?()
     }
 
     @objc private func onToggleMouseBadges() {
-        CatSettings.shared.showMouseBadges = (mouseBadgesSwitch.state == .on)
+        CatSettings.shared.showMouseBadges = (mouseBadgesSwitch?.isOn == true)
         onSettingsChanged?()
     }
 
     @objc private func onTypingLimbSelected() {
-        let idx = max(0, min(3, typingLimbPopup.indexOfSelectedItem))
+        guard let popup = typingLimbPopup else { return }
+        let idx = max(0, min(3, popup.indexOfSelectedItem))
         CatSettings.shared.footEasterEgg = (idx == 0 || idx == 1)
         CatSettings.shared.tailEasterEgg = (idx == 0 || idx == 2)
         onSettingsChanged?()
     }
 
     @objc private func onToggleLegends() {
-        CatSettings.shared.showKeyLegends = (legendsSwitch.state == .on)
+        CatSettings.shared.showKeyLegends = (legendsSwitch?.isOn == true)
         onSettingsChanged?()
     }
 
     @objc private func onToggleMarquee() {
-        CatSettings.shared.keyboardMarquee = (marqueeSwitch.state == .on)
+        CatSettings.shared.keyboardMarquee = (marqueeSwitch?.isOn == true)
+        marqueeModePopup?.isEnabled = CatSettings.shared.keyboardMarquee
         onSettingsChanged?()
     }
 
+    @objc private func onMarqueeModeSelected() {
+        let modes = KeyboardMarqueeMode.allCases
+        let idx = max(0, min(modes.count - 1, marqueeModePopup.indexOfSelectedItem))
+        CatSettings.shared.marqueeMode = modes[idx]
+        onSettingsChanged?()
+    }
+
+    /// Titles for the marquee mode popup, in `KeyboardMarqueeMode.allCases` order.
+    private static func marqueeModeTitles() -> [String] {
+        let zh = ["循环播放全部（自动轮换）", "单向扫描（左 → 右，原版）", "循环环绕（无缝衔接）", "涟漪扩散（中心向两侧）"]
+        let en = ["Cycle All (Auto-Rotate)", "Single Sweep (Left → Right)", "Loop Wrap (Seamless)", "Ripple (Centre → Edges)"]
+        let enMode = CatSettings.shared.isEnglish
+        return KeyboardMarqueeMode.allCases.enumerated().map { i, _ in enMode ? en[i] : zh[i] }
+    }
+
     @objc private func onToggleLevelKeyboard() {
-        CatSettings.shared.levelKeyboard = (levelKeyboardSwitch.state == .on)
+        CatSettings.shared.levelKeyboard = (levelKeyboardSwitch?.isOn == true)
         onSettingsChanged?()
     }
 
     @objc private func onTabletSelected() {
-        CatSettings.shared.tabletMode = max(0, min(2, tabletPopup.indexOfSelectedItem))
+        guard let popup = tabletPopup else { return }
+        CatSettings.shared.tabletMode = max(0, min(2, popup.indexOfSelectedItem))
         onSettingsChanged?()
     }
 
     @objc private func onToggleFullscreenOverlay() {
-        CatSettings.shared.fullScreenOverlay = (fullscreenOverlaySwitch.state == .on)
+        CatSettings.shared.fullScreenOverlay = (fullscreenOverlaySwitch?.isOn == true)
         onApplyWindowLevel?()
     }
 
     @objc private func onToggleClickThrough() {
-        CatSettings.shared.fullClickThrough = (clickThroughSwitch.state == .on)
+        CatSettings.shared.fullClickThrough = (clickThroughSwitch?.isOn == true)
     }
 
     @objc private func onToggleAutoHide() {
-        CatSettings.shared.autoHideFullscreen = (autoHideSwitch.state == .on)
+        CatSettings.shared.autoHideFullscreen = (autoHideSwitch?.isOn == true)
         onAutoHideChanged?()
     }
 
+    @objc private func onToggleAutoHeadphones() {
+        CatSettings.shared.autoHeadphonesOnMusic = (autoHeadphonesSwitch?.isOn == true)
+    }
+
     @objc private func onOBSSelected() {
-        let mode = max(0, min(2, obsPopup.indexOfSelectedItem))
+        guard let popup = obsPopup else { return }
+        let mode = max(0, min(2, popup.indexOfSelectedItem))
         CatSettings.shared.obsCaptureMode = mode
         if mode == 0 {
             CatSettings.shared.obsHideDesktop = false
-            obsHideSwitch.state = .off
+            obsHideSwitch?.isOn = false
         }
-        obsHideSwitch.isEnabled = (mode > 0)
+        obsHideSwitch?.isEnabled = (mode > 0)
         onApplyOBSMode?()
     }
 
     @objc private func onToggleOBSHide() {
-        CatSettings.shared.obsHideDesktop = (obsHideSwitch.state == .on)
+        CatSettings.shared.obsHideDesktop = (obsHideSwitch?.isOn == true)
         onApplyOBSMode?()
     }
 
     @objc private func onToggleAutoStart() {
-        setAutoStart?(autoStartSwitch.state == .on)
+        setAutoStart?(autoStartSwitch?.isOn == true)
     }
 
     @objc private func onToggleHourlyAnnouncement() {
-        CatSettings.shared.hourlyAnnouncement = (hourlySwitch.state == .on)
+        CatSettings.shared.hourlyAnnouncement = (hourlySwitch?.isOn == true)
     }
 
     @objc private func onLangChanged() {
-        CatSettings.shared.language = (langSeg.selectedSegment == 1) ? "en" : "zh"
+        guard let seg = langSeg else { return }
+        CatSettings.shared.language = (seg.selectedSegment == 1) ? "en" : "zh"
         onLanguageChanged?()
         rebuildUI()
+    }
+}
+
+// MARK: - Batch Delete Imported Skins Window (Lightweight Vector Checklist, Releases Views on Close)
+
+private final class SkinSwatchDotView: NSView {
+    private let coatColor: NSColor
+    private let eyeColor: NSColor?
+    override var isFlipped: Bool { true }
+
+    init(frame: NSRect, coatColor: NSColor, eyeColor: NSColor?) {
+        self.coatColor = coatColor
+        self.eyeColor = eyeColor
+        super.init(frame: frame)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let circle = NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5))
+        coatColor.setFill()
+        circle.fill()
+        KuroUITheme.border.setStroke()
+        circle.lineWidth = 1
+        circle.stroke()
+        if let eyeColor {
+            let dot = NSBezierPath(ovalIn: NSRect(x: bounds.midX - 3, y: bounds.midY - 3, width: 6, height: 6))
+            eyeColor.setFill()
+            dot.fill()
+        }
+    }
+}
+
+private final class SkinBatchRowView: NSView {
+    var onToggle: (() -> Void)?
+    var isSelectedRow: Bool = false { didSet { needsDisplay = true } }
+    override var isFlipped: Bool { true }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onToggle?()
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let path = NSBezierPath(roundedRect: rect, xRadius: 10, yRadius: 10)
+        (isSelectedRow ? KuroUITheme.accentSoft : KuroUITheme.cardBg).setFill()
+        path.fill()
+        (isSelectedRow ? KuroUITheme.accent.withAlphaComponent(0.55) : KuroUITheme.border).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+}
+
+/// Focused checklist window for batch-deleting `.kurocat` skins without holding thumbnail bitmaps in memory.
+final class SkinBatchDeleteWindowController: NSWindowController, NSWindowDelegate, NSSearchFieldDelegate {
+    var onBatchDelete: (([String]) -> Bool)?
+
+    private var selectedIds: Set<String> = []
+    private var query: String = ""
+    private var searchField: NSSearchField?
+    private var listDoc: FlippedView?
+    private var countLabel: NSTextField?
+    private var deleteBtn: KuroThemedButton?
+
+    init() {
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 520),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        win.isReleasedWhenClosed = false
+        win.level = .floating
+        win.titlebarAppearsTransparent = true
+        win.isMovableByWindowBackground = true
+        win.backgroundColor = KuroUITheme.windowBg
+        super.init(window: win)
+        win.delegate = self
+        win.center()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func tr(_ zh: String, _ en: String) -> String {
+        CatSettings.shared.isEnglish ? en : zh
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        selectedIds.removeAll()
+        query = ""
+        searchField = nil
+        listDoc = nil
+        countLabel = nil
+        deleteBtn = nil
+        window?.contentView = nil
+    }
+
+    func syncWindowLevel() {
+        guard let window else { return }
+        window.level = CatSettings.shared.fullScreenOverlay
+            ? NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.popUpMenuWindow)) + 1)
+            : .floating
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+    }
+
+    func present() {
+        syncWindowLevel()
+        selectedIds.removeAll()
+        query = ""
+        rebuildUI()
+        NSApp.activate(ignoringOtherApps: true)
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
+    }
+
+    func refresh() {
+        guard window?.isVisible == true else { return }
+        let validIds = Set(SkinLibrary.shared.skins.map { $0.id })
+        selectedIds = selectedIds.intersection(validIds)
+        rebuildListRows()
+    }
+
+    private func filteredSkins() -> [SkinSpec] {
+        let all = SkinLibrary.shared.skins
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return all }
+        return all.filter {
+            $0.name.lowercased().contains(q)
+                || $0.author.lowercased().contains(q)
+                || $0.id.lowercased().contains(q)
+        }
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        query = searchField?.stringValue ?? ""
+        rebuildListRows()
+    }
+
+    private func makeBtn(_ title: String, variant: KuroThemedButton.Variant, action: Selector, frame: NSRect) -> KuroThemedButton {
+        let btn = KuroThemedButton(title: title, target: self, action: action)
+        btn.isBordered = false
+        btn.variant = variant
+        btn.fontSize = 11.5
+        btn.frame = frame
+        return btn
+    }
+
+    private func rebuildUI() {
+        guard let win = window else { return }
+        win.title = tr("批量删除皮肤", "Batch Delete Skins")
+        win.backgroundColor = KuroUITheme.windowBg
+
+        let winW: CGFloat = 460
+        let winH: CGFloat = 520
+        let padX: CGFloat = 18
+        let innerW = winW - padX * 2
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: winW, height: winH))
+
+        let titleLbl = NSTextField(labelWithString: tr("批量管理与清理皮肤", "Batch Delete Imported Skins"))
+        titleLbl.font = .systemFont(ofSize: 17, weight: .bold)
+        titleLbl.textColor = KuroUITheme.ink
+        titleLbl.frame = NSRect(x: padX, y: 12, width: innerW, height: 22)
+        root.addSubview(titleLbl)
+
+        let subLbl = NSTextField(labelWithString: tr("勾选不需要的 .kurocat 文件一次删除；内置 4 款猫咪不受影响", "Check unwanted .kurocat files to remove at once; built-in coats stay safe"))
+        subLbl.font = .systemFont(ofSize: 11.5)
+        subLbl.textColor = KuroUITheme.secondaryInk
+        subLbl.frame = NSRect(x: padX, y: 36, width: innerW, height: 16)
+        root.addSubview(subLbl)
+
+        let sf = NSSearchField(frame: NSRect(x: padX, y: 60, width: innerW, height: 26))
+        sf.placeholderString = tr("搜索皮肤名称或作者…", "Search name or author…")
+        sf.stringValue = query
+        sf.delegate = self
+        root.addSubview(sf)
+        searchField = sf
+
+        let barY: CGFloat = 94
+        root.addSubview(makeBtn(tr("全选", "All"), variant: .secondary, action: #selector(onSelectAll), frame: NSRect(x: padX, y: barY, width: 54, height: 24)))
+        root.addSubview(makeBtn(tr("清空", "None"), variant: .secondary, action: #selector(onSelectNone), frame: NSRect(x: padX + 60, y: barY, width: 54, height: 24)))
+        root.addSubview(makeBtn(tr("反选", "Invert"), variant: .secondary, action: #selector(onInvertSelection), frame: NSRect(x: padX + 120, y: barY, width: 54, height: 24)))
+        root.addSubview(makeBtn(tr("仅选未穿戴", "Unused Only"), variant: .secondary, action: #selector(onSelectUnused), frame: NSRect(x: padX + 180, y: barY, width: 88, height: 24)))
+
+        let cntLbl = NSTextField(labelWithString: "")
+        cntLbl.font = .monospacedDigitSystemFont(ofSize: 11.5, weight: .semibold)
+        cntLbl.textColor = KuroUITheme.secondaryInk
+        cntLbl.alignment = .right
+        cntLbl.frame = NSRect(x: winW - padX - 130, y: barY + 4, width: 130, height: 17)
+        root.addSubview(cntLbl)
+        countLabel = cntLbl
+
+        let listY: CGFloat = 126
+        let listH: CGFloat = winH - listY - 58
+        let scroll = NSScrollView(frame: NSRect(x: padX, y: listY, width: innerW, height: listH))
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+
+        let doc = FlippedView(frame: NSRect(x: 0, y: 0, width: innerW, height: listH))
+        scroll.documentView = doc
+        listDoc = doc
+        root.addSubview(scroll)
+
+        let footDiv = NSView(frame: NSRect(x: padX, y: winH - 50, width: innerW, height: 1))
+        footDiv.wantsLayer = true
+        footDiv.layer?.backgroundColor = KuroUITheme.divider.cgColor
+        root.addSubview(footDiv)
+
+        root.addSubview(makeBtn(tr("关闭", "Close"), variant: .secondary, action: #selector(onClose), frame: NSRect(x: padX, y: winH - 40, width: 84, height: 28)))
+        let delBtn = makeBtn(tr("删除所选", "Delete Selected"), variant: .dangerSolid, action: #selector(onConfirmDelete), frame: NSRect(x: winW - padX - 148, y: winH - 40, width: 148, height: 28))
+        root.addSubview(delBtn)
+        deleteBtn = delBtn
+
+        win.contentView = root
+        rebuildListRows()
+    }
+
+    private func rebuildListRows() {
+        guard let doc = listDoc else { return }
+        doc.subviews.forEach { $0.removeFromSuperview() }
+
+        let skins = filteredSkins()
+        let total = SkinLibrary.shared.skins.count
+        let innerW = doc.frame.width
+        let activeId = CatSettings.shared.customSkin
+
+        if skins.isEmpty {
+            let emptyMsg = total == 0
+                ? tr("暂无已导入的自定义皮肤", "No imported custom skins yet")
+                : tr("没有匹配当前搜索词的皮肤", "No skins match your search")
+            let lbl = NSTextField(labelWithString: emptyMsg)
+            lbl.alignment = .center
+            lbl.font = .systemFont(ofSize: 13)
+            lbl.textColor = KuroUITheme.secondaryInk
+            lbl.frame = NSRect(x: 12, y: 90, width: innerW - 24, height: 22)
+            doc.addSubview(lbl)
+            doc.frame = NSRect(x: 0, y: 0, width: innerW, height: 220)
+        } else {
+            let rowH: CGFloat = 46
+            let gap: CGFloat = 6
+            for (idx, sk) in skins.enumerated() {
+                let ry = CGFloat(idx) * (rowH + gap)
+                let isSel = selectedIds.contains(sk.id)
+                let row = SkinBatchRowView(frame: NSRect(x: 0, y: ry, width: innerW, height: rowH))
+                row.isSelectedRow = isSel
+                let skinId = sk.id
+                row.onToggle = { [weak self] in
+                    guard let self else { return }
+                    if self.selectedIds.contains(skinId) {
+                        self.selectedIds.remove(skinId)
+                    } else {
+                        self.selectedIds.insert(skinId)
+                    }
+                    self.rebuildListRows()
+                }
+
+                let check = NSButton(checkboxWithTitle: "", target: self, action: #selector(onRowCheck(_:)))
+                check.state = isSel ? .on : .off
+                check.identifier = NSUserInterfaceItemIdentifier(skinId)
+                check.frame = NSRect(x: 10, y: 13, width: 20, height: 20)
+                row.addSubview(check)
+
+                let coatCol: NSColor
+                if sk.renderStyle == .beagle {
+                    coatCol = NSColor(srgbRed: 0.78, green: 0.56, blue: 0.37, alpha: 1)
+                } else if sk.renderStyle == .douni {
+                    coatCol = NSColor(srgbRed: 0.96, green: 0.95, blue: 0.93, alpha: 1)
+                } else {
+                    coatCol = sk.palette.body.srgbNS
+                }
+                let swatch = SkinSwatchDotView(frame: NSRect(x: 34, y: 14, width: 18, height: 18), coatColor: coatCol, eyeColor: sk.palette.iris?.srgbNS)
+                row.addSubview(swatch)
+
+                let isWearing = (sk.id == activeId)
+                let nameText = SkinLibrary.shared.displayName(for: sk)
+                let nameLbl = NSTextField(labelWithString: nameText)
+                nameLbl.font = .systemFont(ofSize: 13, weight: .semibold)
+                nameLbl.textColor = KuroUITheme.ink
+                nameLbl.lineBreakMode = .byTruncatingTail
+                nameLbl.frame = NSRect(x: 60, y: 6, width: innerW - (isWearing ? 128 : 74), height: 18)
+                row.addSubview(nameLbl)
+
+                if isWearing {
+                    let pill = KuroBadgePillView(
+                        frame: NSRect(x: innerW - 64, y: 7, width: 52, height: 17),
+                        text: tr("正在穿", "Active"),
+                        bg: KuroUITheme.accent,
+                        fg: KuroUITheme.accentForeground
+                    )
+                    row.addSubview(pill)
+                }
+
+                let styleTag: String = {
+                    switch sk.renderStyle {
+                    case .douni, .beagle: return tr("彩蛋款", "Easter Egg")
+                    case .dazed: return tr("呆猫款", "Dazed")
+                    case .standard: return tr("标准款", "Custom")
+                    }
+                }()
+                let authorPart = sk.author.isEmpty ? tr("无署名", "Anonymous") : sk.author
+                let sub = NSTextField(labelWithString: "\(authorPart) · \(styleTag)")
+                sub.font = .systemFont(ofSize: 11)
+                sub.textColor = KuroUITheme.secondaryInk
+                sub.lineBreakMode = .byTruncatingTail
+                sub.frame = NSRect(x: 60, y: 25, width: innerW - 74, height: 15)
+                row.addSubview(sub)
+
+                doc.addSubview(row)
+            }
+            let totalH = CGFloat(skins.count) * (rowH + gap)
+            doc.frame = NSRect(x: 0, y: 0, width: innerW, height: max(220, totalH))
+        }
+
+        let selCount = selectedIds.count
+        countLabel?.stringValue = tr("已选 \(selCount) / \(total)", "\(selCount) / \(total) selected")
+        deleteBtn?.title = selCount > 0
+            ? tr("删除所选 (\(selCount))", "Delete (\(selCount))")
+            : tr("删除所选", "Delete Selected")
+        deleteBtn?.isEnabled = (selCount > 0)
+    }
+
+    @objc private func onRowCheck(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue else { return }
+        if sender.state == .on {
+            selectedIds.insert(id)
+        } else {
+            selectedIds.remove(id)
+        }
+        rebuildListRows()
+    }
+
+    @objc private func onSelectAll() {
+        for sk in filteredSkins() { selectedIds.insert(sk.id) }
+        rebuildListRows()
+    }
+
+    @objc private func onSelectNone() {
+        let visible = Set(filteredSkins().map { $0.id })
+        selectedIds.subtract(visible)
+        rebuildListRows()
+    }
+
+    @objc private func onInvertSelection() {
+        for sk in filteredSkins() {
+            if selectedIds.contains(sk.id) { selectedIds.remove(sk.id) } else { selectedIds.insert(sk.id) }
+        }
+        rebuildListRows()
+    }
+
+    @objc private func onSelectUnused() {
+        let activeId = CatSettings.shared.customSkin
+        for sk in filteredSkins() where sk.id != activeId {
+            selectedIds.insert(sk.id)
+        }
+        selectedIds.remove(activeId)
+        rebuildListRows()
+    }
+
+    @objc private func onClose() {
+        window?.close()
+    }
+
+    @objc private func onConfirmDelete() {
+        let ordered = SkinLibrary.shared.skins.map(\.id).filter { selectedIds.contains($0) }
+        guard !ordered.isEmpty else { return }
+        _ = onBatchDelete?(ordered)
     }
 }

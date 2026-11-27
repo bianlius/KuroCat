@@ -4,16 +4,22 @@
 #include <objidl.h>
 #include <gdiplus.h>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <vector>
+#include <unordered_map>
 #include <algorithm>
+#include <memory>
+#include <string>
 #include "CatPhysics.hpp"
 #include "DoraemonRenderer.hpp"
 #include "PikachuRenderer.hpp"
 #include "TabbyCoat.hpp"
 #include "../../shared/CoatPatterns.hpp"
 #include "../../shared/SkinSpec.hpp"
+#include "../../shared/Rig.hpp"
 #include "../../shared/KeyboardSkinSpec.hpp"
+#include "../../shared/BeagleAtlas.hpp"
 
 // Built-in skin metadata and palettes. Character renderers draw their own artwork.
 inline const SkinSpec& builtInSkin(CatCoatTheme coat) {
@@ -110,11 +116,119 @@ class CatRenderer {
 public:
     static constexpr float RadToDeg = 57.2957795f;
 
+    struct GdiplusCachePool {
+        std::unordered_map<uint32_t, std::unique_ptr<Gdiplus::SolidBrush>> brushes;
+        std::unordered_map<uint64_t, std::unique_ptr<Gdiplus::Pen>> pens;
+        std::unordered_map<uint64_t, std::unique_ptr<Gdiplus::Bitmap>> scratchBitmaps;
+        std::unordered_map<std::string, std::unique_ptr<Gdiplus::Bitmap>> bakedCoatTextures;
+    };
+
+    static inline GdiplusCachePool& cachePool() {
+        static GdiplusCachePool pool;
+        return pool;
+    }
+
+    static inline void cleanupGdiplusCaches() {
+        auto& pool = cachePool();
+        pool.brushes.clear();
+        pool.pens.clear();
+        pool.scratchBitmaps.clear();
+        pool.bakedCoatTextures.clear();
+    }
+
+    static Gdiplus::SolidBrush* cachedBrush(const Gdiplus::Color& c) {
+        auto& brushes = cachePool().brushes;
+        uint32_t key = c.GetValue();
+        auto it = brushes.find(key);
+        if (it != brushes.end()) return it->second.get();
+        if (brushes.size() >= 256) brushes.clear();
+        auto b = std::make_unique<Gdiplus::SolidBrush>(c);
+        Gdiplus::SolidBrush* ptr = b.get();
+        brushes.emplace(key, std::move(b));
+        return ptr;
+    }
+
+    static Gdiplus::Pen* cachedPen(const Gdiplus::Color& c, float width = 1.0f) {
+        auto& pens = cachePool().pens;
+        uint64_t key = (static_cast<uint64_t>(c.GetValue()) << 32) |
+                       static_cast<uint32_t>(std::lround(width * 100.0f));
+        auto it = pens.find(key);
+        if (it != pens.end()) return it->second.get();
+        if (pens.size() >= 256) pens.clear();
+        auto p = std::make_unique<Gdiplus::Pen>(c, width);
+        Gdiplus::Pen* ptr = p.get();
+        pens.emplace(key, std::move(p));
+        return ptr;
+    }
+
+    static Gdiplus::Bitmap* cachedScratchBitmap(int w, int h) {
+        auto& bmps = cachePool().scratchBitmaps;
+        uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(w)) << 32) |
+                       static_cast<uint32_t>(h);
+        auto it = bmps.find(key);
+        if (it != bmps.end()) return it->second.get();
+        if (bmps.size() >= 16) bmps.clear();
+        auto b = std::make_unique<Gdiplus::Bitmap>(w, h, PixelFormat32bppPARGB);
+        if (b->GetLastStatus() != Gdiplus::Ok) return nullptr;
+        Gdiplus::Bitmap* ptr = b.get();
+        bmps.emplace(key, std::move(b));
+        return ptr;
+    }
+
+    static uint64_t skinArtHash(const SkinSpec& skin) {
+        uint64_t h = 14695981039346656037ULL;
+        auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ULL; };
+        mix(skin.marks.size());
+        mix(skin.regions.size());
+        for (const auto& m : skin.marks) {
+            mix((uint64_t)m.space);
+            mix((uint64_t)m.points.size());
+            mix((uint64_t)std::lround(m.width * 100.0f));
+        }
+        for (const auto& r : skin.regions) {
+            mix((uint64_t)r.space);
+            mix((uint64_t)r.flat.size());
+        }
+        return h;
+    }
+
+    template <typename DrawFn>
+    static void drawWithBakedTexture(Gdiplus::Graphics& g, const SkinSpec& skin, const char* partName,
+                                     float pixelScale, float logicalW, float logicalH, DrawFn&& bakeFn) {
+        float clampedScale = std::clamp(pixelScale, 1.0f, 3.0f);
+        int bw = std::max(1, (int)std::ceil(logicalW * clampedScale));
+        int bh = std::max(1, (int)std::ceil(logicalH * clampedScale));
+        std::string key = skin.id + "|" + partName + "|" +
+                          std::to_string((int)std::lround(clampedScale * 100.0f)) + "|" +
+                          std::to_string(skinArtHash(skin));
+        auto& cache = cachePool().bakedCoatTextures;
+        auto it = cache.find(key);
+        if (it == cache.end()) {
+            if (cache.size() >= 48) cache.clear();
+            auto bmp = std::make_unique<Gdiplus::Bitmap>(bw, bh, PixelFormat32bppPARGB);
+            if (bmp->GetLastStatus() == Gdiplus::Ok) {
+                Gdiplus::Graphics bg(bmp.get());
+                bg.Clear(Gdiplus::Color(0, 0, 0, 0));
+                bg.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+                bg.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+                bg.ScaleTransform((float)bw / logicalW, (float)bh / logicalH);
+                bakeFn(bg);
+                it = cache.emplace(std::move(key), std::move(bmp)).first;
+            }
+        }
+        if (it != cache.end() && it->second) {
+            g.DrawImage(it->second.get(), Gdiplus::RectF(0.0f, 0.0f, logicalW, logicalH),
+                        0.0f, 0.0f, (Gdiplus::REAL)bw, (Gdiplus::REAL)bh, Gdiplus::UnitPixel);
+        } else {
+            bakeFn(g);
+        }
+    }
+
     static Pt headPosition(const CatPhysics& physics, const SkinSpec& skin) {
         float breath = physics.breathingOffset();
         float scruff = std::clamp(physics.scruffDrag.value, 0.0f, 1.0f);
         return {
-            CatPhysics::SeatAnchor.x + physics.bodyShiftX.value + physics.bodyTilt.value * 36.0f + physics.headYaw.value * 7.5f,
+            CatPhysics::SeatAnchor.x + physics.bodyShiftX.value + physics.bodyTilt.value * 36.0f + physics.headYaw.value * kurorig::HeadShiftPerYaw,
             126.0f + buildOf(skin).headLift + physics.headOffsetY.value + physics.headPitch.value * 4.8f + breath * 1.1f - scruff * 22.0f
         };
     }
@@ -128,7 +242,7 @@ public:
             return CatHitZone::None;
         }
 
-        if (skin.renderStyle == SkinRenderStyle::Douni) {
+        if (skin.renderStyle == SkinRenderStyle::Douni || skin.renderStyle == SkinRenderStyle::Beagle) {
             float loaf = std::clamp(physics.douniLoafBlend.value, 0.0f, 1.0f);
             float loafS = loaf * loaf * (3.0f - 2.0f * loaf);
             float scruff = std::clamp(physics.scruffDrag.value, 0.0f, 1.0f);
@@ -160,7 +274,7 @@ public:
         const SkinShape& shape = skin.shape;
         float cx = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value;
         float breath = std::sin(physics.time * 2.1f) * 1.6f;
-        Pt headCenter = { cx + physics.bodyTilt.value * 36.0f + physics.headYaw.value * 7.5f,
+        Pt headCenter = { cx + physics.bodyTilt.value * 36.0f + physics.headYaw.value * kurorig::HeadShiftPerYaw,
                           126.0f + buildOf(skin).headLift + physics.headOffsetY.value + physics.headPitch.value * 4.8f + breath * 1.1f };
 
         // Petting zones follow the reshaped head (size + cheeks) and body (width), plus Dazed Cat hood proportions.
@@ -198,6 +312,30 @@ public:
         return pt;
     }
 
+    static Pt scruffPinchCanvasPoint(const SkinSpec& skin, bool flipped, float rotationDeg) {
+        Pt pt = { 180.0f, 58.0f };
+        if (skin.renderStyle != SkinRenderStyle::Beagle) {
+            float hs = skin.shape.headScale;
+            const auto& bd = buildOf(skin);
+            pt.y = 82.0f + (hs - 1.0f) * 6.0f + bd.crownBaseY * hs - 6.2f * hs;
+        }
+        if (flipped) {
+            pt.x = CatPhysics::CanvasWidth - pt.x;
+        }
+        if (std::fabs(rotationDeg) > 0.01f) {
+            constexpr float cx = CatPhysics::CanvasWidth * 0.5f;
+            constexpr float cy = CatPhysics::CanvasHeight * 0.5f;
+            float rad = rotationDeg * (3.14159265f / 180.0f);
+            float fit = std::max(0.5f, 1.0f - std::fabs(std::sin(rad)) * 0.14f);
+            float dx = (pt.x - cx) * fit;
+            float dy = (pt.y - cy) * fit;
+            float c = std::cos(rad);
+            float s = std::sin(rad);
+            pt = { cx + dx * c - dy * s, cy + dx * s + dy * c };
+        }
+        return pt;
+    }
+
     /// Edit-mode hit test in unflipped 360x320 canvas coordinates:
     /// 20 = top rotation handle, 0..3 = corner resize handles, 12 = inside edit box, -1 = outside.
     static int hitTestEditOverlay(Pt p) {
@@ -214,12 +352,20 @@ public:
         draw(g, physics, settings, skin, KeyboardSkinSpec::builtInTheme((int)settings.keyboardTheme));
     }
 
+    // True while draw() re-enters itself to paint the seated pose underneath a fading scruff-lift pose.
+    static bool& seatedOnlyPass() { static bool v = false; return v; }
+
     static void draw(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings, const SkinSpec& skin, const KeyboardSkinSpec& kbSkin,
                      const DoraemonRenderer* doraemon = nullptr, const PikachuRenderer* pikachu = nullptr) {
         using namespace Gdiplus;
         whiteOutlineEnabled() = settings.whiteOutline;
-        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        Matrix baseMatrix;
+        g.GetTransform(&baseMatrix);
+        g.SetSmoothingMode(SmoothingModeHighQuality);
         g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+        g.SetCompositingQuality(CompositingQualityHighQuality);
+        bool isIntScale = std::fabs(settings.scale - std::round(settings.scale)) < 0.01f;
+        g.SetInterpolationMode(isIntScale ? InterpolationModeBilinear : InterpolationModeHighQualityBicubic);
         g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
 
         GraphicsState flipState = g.Save();
@@ -247,6 +393,18 @@ public:
         float dizzyFallRaw = std::clamp((dizzy - 0.50f) / 0.50f, 0.0f, 1.0f);
         float dizzyFall = dizzyFallRaw * dizzyFallRaw * (3.0f - 2.0f * dizzyFallRaw);
         float preWobble = std::clamp((dizzy - 0.12f) / 0.38f, 0.0f, 1.0f) * (1.0f - dizzyFall);
+
+        if (skin.renderStyle == SkinRenderStyle::Beagle) {
+            drawBeagleScene(g, physics, skin, kbSkin, settings);
+            if (!physics.floatingKeycaps.empty()) {
+                drawFloatingKeycaps(g, physics, settings.flipHorizontal);
+            }
+            g.Restore(flipState);
+            if (settings.isEditMode) {
+                drawEditOverlay(g, settings.scale, settings.rotationDeg, settings.flipHorizontal);
+            }
+            return;
+        }
 
         if (skin.renderStyle == SkinRenderStyle::Douni) {
             drawDouniScene(g, physics, skin, kbSkin, settings.eyeTheme, settings.keyboardMarquee, settings.flipHorizontal);
@@ -284,7 +442,7 @@ public:
         float sharedSleepHead = isClassic ? (standardBuild().headLift - buildOf(skin).headLift) * lieS : 0.0f;
 
         Pt headCenter = {
-            seatX + physics.bodyTilt.value * 36.0f + physics.headYaw.value * 7.5f - lieS * 4.0f,
+            seatX + physics.bodyTilt.value * 36.0f + physics.headYaw.value * kurorig::HeadShiftPerYaw - lieS * 4.0f,
             126.0f + buildOf(skin).headLift + sharedSleepHead + physics.headOffsetY.value + physics.headPitch.value * 4.8f + breath * 1.1f - scruff * 22.0f + lieS * 60.0f
         };
 
@@ -323,13 +481,17 @@ public:
         }
 
         if (isDazed(skin)) drawDazedSword(g, seatX, seatY, physics);
-        bool tailInFront = (physics.tailTyping.value >= 0.5f) || (lieS >= 0.45f);
+        bool tailInFront = (physics.tailTyping.value > 0.05f) || (lieS >= 0.45f);
         // Pass 1: unified sticker-style outer white outline for ALL cat skins (optional)
         if (whiteOutlineEnabled()) {
-            // Outline connected parts first; fills cover the internal tail-root seam.
+            // Outline connected parts first; fills cover internal tail-root and shoulder seams.
             drawTail(g, seatX, seatY, physics, skin, true);
             drawEarsLayer(g, headCenter, physics, skin, true);
             drawUnifiedSilhouette(g, seatX, seatY, headCenter, breath, physics, skin, true);
+            if (physics.hindFootActive.value > 0.03f) {
+                drawHindFoot(g, seatX, seatY, physics, skin, true);
+            }
+            drawFrontPaws(g, seatX, seatY, breath, physics, skin, true);
         }
         // 3. Tail (behind body unless 4-key tail typing or curled up asleep)
         if (!tailInFront) {
@@ -370,6 +532,11 @@ public:
         if (!skin.decorations.empty()) {
             drawDecorations(g, seatX, seatY, headCenter, physics, skin, nullptr, nullptr,
                             anchorBit(SkinAnchorPoint::Face) | anchorBit(SkinAnchorPoint::HeadTop));
+        }
+
+        // 8c. Auto-worn 2.5D headphones & floating music notes when listening to music/media
+        if (physics.musicIntensity > 0.01f) {
+            drawMusicHeadphones(g, headCenter, physics, settings.eyeTheme, skin);
         }
 
         if (tailInFront) {
@@ -487,7 +654,7 @@ public:
 
 private:
     static void drawSceneEffects(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings) {
-        if (!physics.floatingKeycaps.empty()) {
+        if (!physics.floatingKeycaps.empty() && !seatedOnlyPass()) {
             drawFloatingKeycaps(g, physics, settings.flipHorizontal);
         }
         drawSparkles(g, physics, settings.eyeTheme, settings.flipHorizontal);
@@ -517,6 +684,14 @@ private:
         return std::fabs(mark.color.r - 242.0 / 255.0) < 0.01 &&
                std::fabs(mark.color.g - 238.0 / 255.0) < 0.01 &&
                std::fabs(mark.color.b - 228.0 / 255.0) < 0.01;
+    }
+    static bool shouldSkipJawHeadClip(const SkinMark& mark) {
+        if (mark.clipToBib) return true;
+        if (mark.space != SkinSpace::Head || mark.stroke || !isMilkMark(mark)) return false;
+        for (const auto& pt : mark.points) {
+            if (std::fabs(pt.x) > 46.0f) return true;
+        }
+        return false;
     }
 
     // Base skeleton per SkinBuild; SkinShape multipliers are applied on top (all exact no-ops at 1).
@@ -559,46 +734,30 @@ private:
     static BYTE byteOf(double v) { return (BYTE)std::lround(std::clamp(v, 0.0, 1.0) * 255.0); }
     static Gdiplus::Color col(const SkinColor& c) { return Gdiplus::Color(byteOf(c.a), byteOf(c.r), byteOf(c.g), byteOf(c.b)); }
     static Gdiplus::Color withAlpha(const SkinColor& c, BYTE a) { return Gdiplus::Color(a, byteOf(c.r), byteOf(c.g), byteOf(c.b)); }
-    // Legacy crease strokes ask for an absolute alpha `a`: opaque-ish creases (like the black cat's mint,
-    // alpha >= 0.75) use it as-is, translucent ones scale it by their own alpha (the patterned coats' 0.60)
-    // — exactly what the pre-SkinSpec creaseColor(coat, a) produced.
-    static Gdiplus::Color creaseWith(const SkinColor& c, BYTE a) { return withAlpha(c, c.a >= 0.75 ? a : (BYTE)(a * (float)c.a)); }
+    static Gdiplus::Color colMul(const SkinColor& c, float alphaMul) {
+        return withAlpha(c, byteOf(c.a * std::clamp((double)alphaMul, 0.0, 1.0)));
+    }
+    static Gdiplus::Color creaseWith(const SkinColor& c, BYTE a) { return colMul(c, (float)a / 255.0f); }
 
     // Head-local point -> canvas, on the skin's head surface (dome / plane) or flat skull space.
     static Gdiplus::PointF headPoint(SkinPoint p, bool skull, const SkinSpec& skin, Pt head, const CatPhysics& physics, bool whiteSurface = false) {
-        float radius = std::max(0.0f, 1.0f - (p.x * p.x) / (46.0f * 46.0f) - (p.y * p.y) / (40.0f * 40.0f));
-        float surface = whiteSurface ? (radius * radius * (3.0f - 2.0f * radius)) : std::sqrt(radius);
-        float depth = skin.headSurface == SkinHeadSurface::Dome ? 29.6f * surface : 27.5f;
-        Pt q = skull ? Pt{p.x,p.y} : projectHead3D(p.x,p.y,depth,physics.headYaw.value*0.50f,physics.headPitch.value*0.36f);
-        float hs = skin.shape.headScale;
-        q.x *= hs; q.y *= hs;
-        float c = std::cos(physics.headTilt.value), s = std::sin(physics.headTilt.value);
-        return {head.x + q.x*c - q.y*s, head.y + q.x*s + q.y*c};
+        kurorig::Vec2 q = kurorig::headPoint(p.x, p.y, skull, skin.headSurface == SkinHeadSurface::Dome, skin.shape.headScale,
+                                             physics.headYaw.value, physics.headPitch.value, physics.headTilt.value,
+                                             head.x, head.y, whiteSurface);
+        return {q.x, q.y};
     }
     static Gdiplus::PointF bodyPoint(SkinPoint p, const SkinSpec& skin, float seatX, float seatY, const CatPhysics& physics) {
-        float bw = skin.shape.bodyWidth;
-        float lie = std::clamp(physics.lieIntensity.value, 0.0f, 1.0f);
-        float lieS = lie * lie * (3.0f - 2.0f * lie);
-        float sy = physics.bodySquash.value * (1.0f - lieS * 0.42f);
-        float sx = (1.0f + (1.0f - physics.bodySquash.value) * 0.55f) * (1.0f + lieS * 0.03f);
-        float c = std::cos(physics.bodyTilt.value), s = std::sin(physics.bodyTilt.value);
-        return {seatX+p.x*bw*sx*c-p.y*sy*s, seatY+p.x*bw*sx*s+p.y*sy*c};
+        kurorig::Vec2 q = kurorig::bodyPoint(p.x, p.y, skin.shape.bodyWidth, physics.bodySquash.value, physics.lieIntensity.value,
+                                             physics.bodyTilt.value, seatX, seatY);
+        return {q.x, q.y};
     }
     static Gdiplus::PointF coatMarkPoint(CoatPoint p, bool headSurface, bool skull, CatCoatTheme coat, float seatX, float seatY, Pt head, const CatPhysics& physics, bool whiteSurface = false) {
-        if (headSurface) {
-            float radius = std::max(0.0f, 1.0f - p.x*p.x/(46.0f*46.0f) - p.y*p.y/(40.0f*40.0f));
-            float surface = whiteSurface ? radius*radius*(3.0f - 2.0f*radius) : std::sqrt(radius);
-            float depth = coat == CatCoatTheme::OrangeWhite ? 29.6f*surface : 27.5f;
-            Pt q = skull ? Pt{p.x,p.y} : projectHead3D(p.x,p.y,depth,physics.headYaw.value*0.50f,physics.headPitch.value*0.36f);
-            float c = std::cos(physics.headTilt.value), s = std::sin(physics.headTilt.value);
-            return {head.x + q.x*c - q.y*s, head.y + q.x*s + q.y*c};
-        }
-        float lie = std::clamp(physics.lieIntensity.value, 0.0f, 1.0f);
-        float lieS = lie * lie * (3.0f - 2.0f * lie);
-        float sy = physics.bodySquash.value * (1.0f - lieS * 0.42f);
-        float sx = (1.0f + (1.0f - physics.bodySquash.value) * 0.55f) * (1.0f + lieS * 0.03f);
-        float c = std::cos(physics.bodyTilt.value), s = std::sin(physics.bodyTilt.value);
-        return {seatX+p.x*sx*c-p.y*sy*s, seatY+p.x*sx*s+p.y*sy*c};
+        // Built-in coats: orange-white sits on the dome, the others on the plane; no head scale or body width.
+        kurorig::Vec2 q = headSurface
+            ? kurorig::headPoint(p.x, p.y, skull, coat == CatCoatTheme::OrangeWhite, 1.0f, physics.headYaw.value, physics.headPitch.value,
+                                 physics.headTilt.value, head.x, head.y, whiteSurface)
+            : kurorig::bodyPoint(p.x, p.y, 1.0f, physics.bodySquash.value, physics.lieIntensity.value, physics.bodyTilt.value, seatX, seatY);
+        return {q.x, q.y};
     }
     static void drawCoatMarks(Gdiplus::Graphics& g, float seatX, float seatY, Pt head, const CatPhysics& physics, CatCoatTheme coat) {
         using namespace Gdiplus;
@@ -627,10 +786,23 @@ private:
                 }
                 points.push_back(coatMarkPoint(p, mark.head, mark.skull, coat, seatX, seatY, head, physics, mark.rgb == 0xF2EEE4));
             }
-            GraphicsPath path;
+            GraphicsPath path(FillModeWinding);
             Color color = rgb(mark.rgb, (BYTE)(mark.alpha * 255));
-            if (mark.width == 0) { path.AddPolygon(points.data(), (INT)points.size()); SolidBrush brush(color); g.FillPath(&brush, &path); }
-            else { path.AddLines(points.data(), (INT)points.size()); Pen pen(color, mark.width); pen.SetStartCap(LineCapRound); pen.SetEndCap(LineCapRound); pen.SetLineJoin(LineJoinRound); g.DrawPath(&pen, &path); }
+            if (mark.width == 0) {
+                if (points.size() >= 3) { path.AddPolygon(points.data(), (INT)points.size()); SolidBrush brush(color); g.FillPath(&brush, &path); }
+                else if (points.size() == 2) { Pen pen(color, 1.0f); g.DrawLine(&pen, points[0], points[1]); }
+                else if (points.size() == 1) { SolidBrush brush(color); g.FillEllipse(&brush, points[0].X - 0.5f, points[0].Y - 0.5f, 1.0f, 1.0f); }
+            } else {
+                if (points.size() == 1) {
+                    SolidBrush brush(color);
+                    float r = mark.width * 0.5f;
+                    g.FillEllipse(&brush, points[0].X - r, points[0].Y - r, mark.width, mark.width);
+                } else {
+                    path.AddLines(points.data(), (INT)points.size());
+                    Pen pen(color, mark.width); pen.SetStartCap(LineCapRound); pen.SetEndCap(LineCapRound); pen.SetLineJoin(LineJoinRound);
+                    g.DrawPath(&pen, &path);
+                }
+            }
             g.Restore(saved);
         }
     }
@@ -641,20 +813,174 @@ private:
         for (const SkinPoint& p : pts) out.push_back(map(p));
         return out;
     }
+    static const std::vector<BYTE>& airbrushStampPixels(const SkinColor& color) {
+        static std::unordered_map<uint32_t, std::vector<BYTE>> cache;
+        uint32_t key = ((uint32_t)byteOf(color.a) << 24)
+                     | ((uint32_t)byteOf(color.r) << 16)
+                     | ((uint32_t)byteOf(color.g) << 8)
+                     | (uint32_t)byteOf(color.b);
+        auto it = cache.find(key);
+        if (it != cache.end()) return it->second;
+        if (cache.size() >= 256) cache.clear();
+
+        constexpr int S = 64;
+        constexpr float center = 31.5f;
+        constexpr float rad = 29.5f;
+        std::vector<BYTE> buf((size_t)(S * S * 4), 0);
+        double baseA = std::clamp(color.a, 0.0, 1.0);
+        double cr = std::clamp(color.r, 0.0, 1.0);
+        double cg = std::clamp(color.g, 0.0, 1.0);
+        double cb = std::clamp(color.b, 0.0, 1.0);
+        for (int py = 0; py < S; ++py) {
+            for (int px = 0; px < S; ++px) {
+                float d = std::hypot((float)px - center, (float)py - center) / rad;
+                double falloff = 0.0;
+                if (d <= 0.45f) falloff = 0.34 + (0.16 - 0.34) * (d / 0.45);
+                else if (d < 1.0f) falloff = 0.16 * (1.0 - (d - 0.45) / 0.55);
+                double pa = std::clamp(baseA * falloff, 0.0, 1.0);
+                BYTE A = (BYTE)std::lround(pa * 255.0);
+                BYTE R = std::min(A, (BYTE)std::lround(cr * pa * 255.0));
+                BYTE G = std::min(A, (BYTE)std::lround(cg * pa * 255.0));
+                BYTE B = std::min(A, (BYTE)std::lround(cb * pa * 255.0));
+                size_t idx = (size_t)(py * S + px) * 4;
+                buf[idx + 0] = B;
+                buf[idx + 1] = G;
+                buf[idx + 2] = R;
+                buf[idx + 3] = A;
+            }
+        }
+        return cache.emplace(key, std::move(buf)).first->second;
+    }
     // Strokes get round caps, except tail-space strokes (bands around the tail) which are cut flat.
     template <class Map>
     static void drawMark(Gdiplus::Graphics& g, const SkinMark& mark, Map map, bool roundCaps = true) {
         using namespace Gdiplus;
+        if (mark.points.empty()) return;
         std::vector<PointF> points = mapPoints(mark.points, map);
-        GraphicsPath path;
         Color color = col(mark.color);
-        if (!mark.stroke) { path.AddPolygon(points.data(), (INT)points.size()); SolidBrush brush(color); g.FillPath(&brush, &path); }
-        else if (!roundCaps) {
-            Pen pen(color, mark.width);
+        if (!mark.stroke) {
+            if (points.size() == 1) {
+                SolidBrush brush(color);
+                g.FillEllipse(&brush, points[0].X - 1.0f, points[0].Y - 1.0f, 2.0f, 2.0f);
+                return;
+            }
+            if (points.size() == 2) {
+                Pen pen(color, 1.0f);
+                pen.SetStartCap(LineCapRound); pen.SetEndCap(LineCapRound);
+                g.DrawLine(&pen, points[0], points[1]);
+                return;
+            }
+            GraphicsPath path(FillModeWinding);
+            path.AddPolygon(points.data(), (INT)points.size());
+            SolidBrush brush(color);
+            g.FillPath(&brush, &path);
+            return;
+        }
+
+        auto isSingleDot = [&]() -> bool {
+            if (points.size() <= 1) return true;
+            for (size_t i = 1; i < points.size(); ++i) {
+                if (std::hypot(points[i].X - points[0].X, points[i].Y - points[0].Y) >= 0.001f) return false;
+            }
+            return true;
+        };
+
+        float baseW = mark.width > 0.0f ? mark.width : 2.0f;
+        if (mark.brush == SkinBrush::Airbrush) {
+            float radius = std::max(2.2f, baseW * 1.15f);
+            float stepDist = std::max(1.4f, radius * 0.34f);
+            float drawR = radius * (32.0f / 29.5f);
+            const auto& px = airbrushStampPixels(mark.color);
+            Bitmap stampBmp(64, 64, 64 * 4, PixelFormat32bppPARGB, const_cast<BYTE*>(px.data()));
+            GraphicsState st = g.Save();
+            g.SetInterpolationMode(InterpolationModeBilinear);
+            g.SetPixelOffsetMode(PixelOffsetModeHalf);
+            auto stamp = [&](float x, float y) {
+                g.DrawImage(&stampBmp, RectF(x - drawR, y - drawR, drawR * 2.0f, drawR * 2.0f),
+                            0.0f, 0.0f, 64.0f, 64.0f, UnitPixel);
+            };
+            if (points.size() == 1) {
+                stamp(points[0].X, points[0].Y);
+            } else {
+                float carry = 0.0f;
+                stamp(points[0].X, points[0].Y);
+                for (size_t i = 1; i < points.size(); ++i) {
+                    const PointF& a = points[i - 1], &b = points[i];
+                    float seg = std::hypot(b.X - a.X, b.Y - a.Y);
+                    if (seg < 0.001f) continue;
+                    float d = stepDist - carry;
+                    while (d <= seg) {
+                        float t = d / seg;
+                        stamp(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
+                        d += stepDist;
+                    }
+                    carry = seg - (d - stepDist);
+                }
+            }
+            g.Restore(st);
+            return;
+        }
+
+        if (mark.brush == SkinBrush::Soft || mark.brush == SkinBrush::Smudge) {
+            float soft = std::max(0.0f, std::min(1.0f, mark.softness));
+            struct Pass { float mul; float a; };
+            Pass passes[4];
+            if (mark.brush == SkinBrush::Smudge) {
+                passes[0] = {1.0f + soft * 1.25f, 0.12f};
+                passes[1] = {1.0f + soft * 0.72f, 0.18f};
+                passes[2] = {1.0f + soft * 0.25f, 0.28f};
+                passes[3] = {0.68f, 0.42f};
+            } else {
+                passes[0] = {1.0f + soft * 1.15f, 0.14f};
+                passes[1] = {1.0f + soft * 0.65f, 0.24f};
+                passes[2] = {1.0f + soft * 0.22f, 0.38f};
+                passes[3] = {0.72f, 0.62f};
+            }
+            if (isSingleDot()) {
+                for (const Pass& p : passes) {
+                    SkinColor sc = mark.color;
+                    sc.a *= p.a;
+                    float r = std::max(0.3f, baseW * p.mul * 0.5f);
+                    SolidBrush br(col(sc));
+                    g.FillEllipse(&br, points[0].X - r, points[0].Y - r, r * 2.0f, r * 2.0f);
+                }
+                return;
+            }
+            GraphicsPath path;
+            path.AddLines(points.data(), (INT)points.size());
+            for (const Pass& p : passes) {
+                SkinColor sc = mark.color;
+                sc.a *= p.a;
+                Pen pen(col(sc), std::max(0.6f, baseW * p.mul));
+                pen.SetStartCap(LineCapRound);
+                pen.SetEndCap(LineCapRound);
+                pen.SetLineJoin(LineJoinRound);
+                g.DrawPath(&pen, &path);
+            }
+            return;
+        }
+
+        if (isSingleDot()) {
+            if (roundCaps) {
+                float r = baseW * 0.5f;
+                SolidBrush br(color);
+                g.FillEllipse(&br, points[0].X - r, points[0].Y - r, baseW, baseW);
+            }
+            return;
+        }
+
+        if (!roundCaps) {
+            Pen pen(color, baseW);
             if (points.size() == 2) g.DrawLine(&pen, points[0].X, points[0].Y, points[1].X, points[1].Y);
             else { pen.SetLineJoin(LineJoinRound); g.DrawLines(&pen, points.data(), (INT)points.size()); }
         }
-        else { path.AddLines(points.data(), (INT)points.size()); Pen pen(color, mark.width); pen.SetStartCap(LineCapRound); pen.SetEndCap(LineCapRound); pen.SetLineJoin(LineJoinRound); g.DrawPath(&pen, &path); }
+        else {
+            GraphicsPath path;
+            path.AddLines(points.data(), (INT)points.size());
+            Pen pen(color, baseW);
+            pen.SetStartCap(LineCapRound); pen.SetEndCap(LineCapRound); pen.SetLineJoin(LineJoinRound);
+            g.DrawPath(&pen, &path);
+        }
     }
     template <class Map>
     static void drawRegion(Gdiplus::Graphics& g, const SkinRegion& region, Map map) {
@@ -746,12 +1072,8 @@ private:
     }
 
     static Pt projectHead3D(float x, float y, float z, float yawRad, float pitchRad) {
-        float cy = std::cos(yawRad), sy = std::sin(yawRad);
-        float x1 = x * cy + z * sy;
-        float z1 = -x * sy + z * cy;
-        float cp = std::cos(pitchRad), sp = std::sin(pitchRad);
-        float y2 = y * cp + z1 * sp;
-        return { x1, y2 };
+        kurorig::Vec2 q = kurorig::projectHead3D(x, y, z, yawRad, pitchRad);
+        return { q.x, q.y };
     }
 
     static Pt quadPoint(Pt p0, Pt p1, Pt p2, float t) {
@@ -1242,7 +1564,18 @@ private:
                     // (upside-down to the viewer, upright from the cat's seat). +3° follows the classic sloped deck.
                     g.RotateTransform(KeyboardLayout::levelKeyboard() ? 180.0f : (180.0f + 3.0f));
                     if (flipped) g.ScaleTransform(-1.0f, 1.0f);
-                    g.DrawString(legend.c_str(), -1, &kf, RectF(-14.0f, -7.0f, 28.0f, 14.0f), &kbSF, &tb);
+                    if (cap.key == PhysicalKey::Enter) {
+                        Pen ep(txtCol, 1.05f);
+                        ep.SetStartCap(LineCapRound); ep.SetEndCap(LineCapRound); ep.SetLineJoin(LineJoinRound);
+                        PointF shaft[3] = { PointF(3.2f, -2.0f), PointF(3.2f, 1.2f), PointF(-3.0f, 1.2f) };
+                        g.DrawLines(&ep, shaft, 3);
+                        PointF head[3] = { PointF(-1.1f, -0.5f), PointF(-3.2f, 1.2f), PointF(-1.1f, 2.9f) };
+                        g.DrawLines(&ep, head, 3);
+                    } else {
+                        StringFormat noclipSF(&kbSF);
+                        noclipSF.SetFormatFlags(noclipSF.GetFormatFlags() | StringFormatFlagsNoClip);
+                        g.DrawString(legend.c_str(), -1, &kf, RectF(-16.0f, -8.0f, 32.0f, 16.0f), &noclipSF, &tb);
+                    }
                     g.Restore(ks);
                 }
             }
@@ -1407,8 +1740,8 @@ private:
         g.RotateTransform(physics.headTilt.value * RadToDeg);
         if (skin.shape.headScale != 1.0f) g.ScaleTransform(skin.shape.headScale, skin.shape.headScale);
 
-        float yawRad = physics.headYaw.value * 0.50f;
-        float pitchRad = physics.headPitch.value * 0.36f;
+        float yawRad = physics.headYaw.value * kurorig::YawPerUnit;
+        float pitchRad = physics.headPitch.value * kurorig::PitchPerUnit;
         float fold = physics.earFold.value;
         float twitch = physics.earTwitch.value * 0.045f;
 
@@ -1652,7 +1985,9 @@ private:
                 Pt projected = projectHead3D(x, y, depth, yaw * .50f, pitch * .36f);
                 return H(projected.x, projected.y);
             };
-            tabby::drawBody(g, path, face, B, physics);
+            GraphicsPath tabbyJawBody;
+            jawSide(tabbyJawBody, false, skin, headCenter, physics);
+            tabby::drawBody(g, path, tabbyJawBody, face, B, physics);
         } else if (isPatternedBuiltIn(skin)) {
             SolidBrush b(col(pal.body));
             g.FillPath(&b, &path);
@@ -1675,22 +2010,19 @@ private:
             auto skullMap = [&](SkinPoint p) { return headPoint(p, true, skin, headCenter, physics); };
             auto bodyMap = [&](SkinPoint p) { return bodyPoint(p, skin, seatX, seatY, physics); };
 
+            const bool hasHeadBody = pal.headBody.set && !pal.headBody.sameAs(pal.body);
             if (!pal.bodyShade.set) {
                 SolidBrush b(col(pal.body));
                 g.FillPath(&b, &path);
             }
-            if (pal.bodyShade.set || pal.headBody.set || skin.partGradients.count("body") || skin.partGradients.count("head") || skin.colorpoint() || hasRegions || hasMarks) {
+            if (pal.bodyShade.set || hasHeadBody || skin.partGradients.count("body") || skin.partGradients.count("head") || skin.colorpoint() || hasRegions || hasMarks) {
                 GraphicsState cs = g.Save();
                 g.SetClip(&path, CombineModeIntersect);
 
                 if (pal.bodyShade.set) {
-                    Color top = col(pal.body), bottom = col(pal.bodyShade);
-                    LinearGradientBrush bodyGrad(PointF(seatX, headCenter.y - 54.0f), PointF(seatX, seatY + 38.0f), top, bottom);
-                    bodyGrad.SetWrapMode(WrapModeTileFlipXY);
-                    Color bodyCols[4] = { top, top, bottom, bottom };
-                    REAL bodyPos[4] = { 0.0f, 0.22f, 0.80f, 1.0f };
-                    bodyGrad.SetInterpolationColors(bodyCols, bodyPos, 4);
-                    g.FillPath(&bodyGrad, &path);
+                    Color bodyCols[2] = { col(pal.body), col(pal.bodyShade) };
+                    REAL bodyPos[2] = { 0.15f, 1.0f };
+                    fillClampedLinearGradient(g, &path, nullptr, PointF(seatX, headCenter.y - 34.0f), PointF(seatX, seatY + 18.0f), bodyCols, bodyPos, 2);
                 }
 
                 if (auto bg = skin.partGradients.find("body"); bg != skin.partGradients.end()) {
@@ -1702,7 +2034,7 @@ private:
                     g.Restore(bsState);
                 }
 
-                if (pal.headBody.set) {
+                if (hasHeadBody) {
                     GraphicsState hsState = g.Save();
                     GraphicsPath headSide;
                     jawSide(headSide, true, skin, headCenter, physics);
@@ -1793,9 +2125,20 @@ private:
                         g.SetClip(&bodySide, CombineModeIntersect);
                         drawMark(g, m, bodyMap);
                         g.Restore(msState);
+                    } else if (m.space == SkinSpace::Skull || m.space == SkinSpace::Head) {
+                        if (shouldSkipJawHeadClip(m)) {
+                            if (m.space == SkinSpace::Skull) drawMark(g, m, skullMap);
+                            else drawMark(g, m, headMap);
+                        } else {
+                            GraphicsState hsState = g.Save();
+                            GraphicsPath headSide;
+                            jawSide(headSide, true, skin, headCenter, physics);
+                            g.SetClip(&headSide, CombineModeIntersect);
+                            if (m.space == SkinSpace::Skull) drawMark(g, m, skullMap);
+                            else drawMark(g, m, headMap);
+                            g.Restore(hsState);
+                        }
                     }
-                    else if (m.space == SkinSpace::Skull) drawMark(g, m, skullMap);
-                    else if (m.space == SkinSpace::Head) drawMark(g, m, headMap);
                 }
                 g.Restore(cs);
             }
@@ -1812,13 +2155,15 @@ private:
         g.RotateTransform(bTilt * RadToDeg);
         g.ScaleTransform(sx, sy);
 
-        SolidBrush pawBrush(col(pal.paws));
+        SolidBrush pawBrush(col(pal.hindPaw.set ? pal.hindPaw : pal.paws));
         g.FillEllipse(&pawBrush, leftHindX, leftHindY, hindW, leftHindH);
         if (rightTucked) {
             g.FillEllipse(&pawBrush, rightHindX, rightHindY, hindW, rightHindH);
         }
 
-        Pen rimPen(skin.colorpoint() ? withAlpha(pal.body, (BYTE)std::lround(140.0f * (1.0f - sharedSleep))) : (isClassicBlack(skin) ? blackOutline(0) : creaseWith(pal.crease, (BYTE)std::lround(148.0f * (1.0f - sharedSleep)))), 1.3f);
+        Pen rimPen(skin.colorpoint()
+            ? colMul(pal.body, 0.55f * (1.0f - sharedSleep))
+            : colMul(pal.crease, 0.58f * (1.0f - sharedSleep)), 1.3f);
         rimPen.SetStartCap(LineCapRound); rimPen.SetEndCap(LineCapRound);
         g.DrawArc(&rimPen, leftHindX + hindW * 0.5f - 7.5f, leftHindY + leftHindH * 0.5f - 7.5f, 15.0f, 15.0f, 15.0f, 150.0f);
         if (rightTucked) {
@@ -1977,7 +2322,7 @@ private:
 
     // MARK: - 3rd Key Hind Foot
 
-    static void drawHindFoot(Gdiplus::Graphics& g, float seatX, float seatY, const CatPhysics& physics, const SkinSpec& skin) {
+    static void drawHindFoot(Gdiplus::Graphics& g, float seatX, float seatY, const CatPhysics& physics, const SkinSpec& skin, bool outlineOnly = false) {
         float hlRX = skin.shape.hindLegRootX;
         float hlRY = skin.shape.hindLegRootY;
         float hlW = skin.shape.hindLegWidth;
@@ -1989,10 +2334,103 @@ private:
             hip.y + (rawT.y - hip.y) * hlReach
         };
         Pt mid = { (hip.x + target.x) * 0.5f + 10.0f * hlReach, (hip.y + target.y) * 0.5f - 8.0f * hlReach };
-        drawLimb(g, hip, mid, target, 15.0f * hlW, 12.0f * hlW, true, 0.85f * physics.hindFootActive.value, skin);
+        drawLimb(g, hip, mid, target, 15.0f * hlW, 12.0f * hlW, true, 0.85f * physics.hindFootActive.value, skin, false, outlineOnly);
     }
 
     // MARK: - 2.5D Eyes & Whiskers
+
+    static void drawMusicHeadphones(Gdiplus::Graphics& g, Pt center, const CatPhysics& physics, EyeColorTheme eyeTheme, const SkinSpec& skin) {
+        using namespace Gdiplus;
+        float t = std::clamp(physics.musicIntensity, 0.0f, 1.0f);
+        float pop = t * t * (3.0f - 2.0f * t);
+        if (pop < 0.01f) return;
+
+        GraphicsState st = g.Save();
+        g.TranslateTransform(center.x, center.y + (1.0f - pop) * -14.0f);
+        g.RotateTransform(physics.headTilt.value * 57.29578f);
+        float hs = skin.shape.headScale;
+        if (hs != 1.0f) g.ScaleTransform(hs, hs);
+
+        float cf = skin.shape.cheekFullness;
+        float yawShift = physics.headYaw.value * 2.5f;
+        float earX = 43.0f * cf;
+        float earY = 2.0f;
+        float crownY = -36.5f;
+        float beatPulse = 0.72f + 0.28f * std::fabs(std::sin(physics.musicPhase));
+        Color eyeC = eyePrimary(eyeTheme);
+        auto mkCol = [&](BYTE r, BYTE gr, BYTE b, float a) {
+            return Color((BYTE)std::clamp((int)std::lround(a * pop * 255.0f), 0, 255), r, gr, b);
+        };
+
+        // 1. Over-head arch band
+        GraphicsPath band;
+        band.AddBezier(
+            PointF(-earX + yawShift * 0.4f, earY - 4.0f),
+            PointF(-earX * 0.94f + yawShift * 0.2f, crownY - 7.5f),
+            PointF( earX * 0.94f + yawShift * 0.2f, crownY - 7.5f),
+            PointF( earX + yawShift * 0.4f, earY - 4.0f));
+        Pen bandPen(mkCol(41, 44, 54, 0.98f), 6.2f);
+        bandPen.SetStartCap(LineCapRound); bandPen.SetEndCap(LineCapRound);
+        g.DrawPath(&bandPen, &band);
+
+        Pen hiPen(mkCol(255, 255, 255, 0.22f), 1.6f);
+        hiPen.SetStartCap(LineCapRound); hiPen.SetEndCap(LineCapRound);
+        g.DrawPath(&hiPen, &band);
+
+        // 2. Left & right cushioned over-ear cups
+        for (float side : { -1.0f, 1.0f }) {
+            GraphicsState cs = g.Save();
+            g.TranslateTransform(side * earX + yawShift * 0.55f, earY);
+            g.RotateTransform(side * -5.7f);
+            SolidBrush padBr(mkCol(26, 28, 36, 0.96f));
+            g.FillEllipse(&padBr, -side * 1.5f - 5.2f, -12.0f, 10.4f, 24.0f);
+            SolidBrush shellBr(mkCol(54, 59, 72, 0.99f));
+            g.FillEllipse(&shellBr, side * 2.0f - 6.6f, -13.2f, 13.2f, 26.4f);
+            Pen ringPen(mkCol(eyeC.GetR(), eyeC.GetG(), eyeC.GetB(), 0.88f * beatPulse), 1.7f);
+            g.DrawEllipse(&ringPen, side * 2.4f - 4.0f, -8.2f, 8.0f, 16.4f);
+            g.Restore(cs);
+        }
+
+        // 3. Floating vector musical notes
+        struct NoteCfg { float side; float off; bool dbl; };
+        const NoteCfg notes[3] = { { -1.0f, 0.00f, false }, { 1.0f, 0.36f, true }, { -1.0f, 0.68f, true } };
+        for (const NoteCfg& nc : notes) {
+            float raw = std::fmod(physics.musicPhase * 0.14f + nc.off, 1.0f);
+            float cyc = raw < 0.0f ? raw + 1.0f : raw;
+            float fadeIn = std::min(1.0f, cyc / 0.18f);
+            float fadeOut = std::min(1.0f, (1.0f - cyc) / 0.26f);
+            float alpha = fadeIn * fadeOut * 0.92f;
+            if (alpha < 0.03f) continue;
+            float nx = nc.side * (earX + 10.0f) + std::sin(cyc * 6.2832f + nc.off * 4.0f) * 5.5f;
+            float ny = earY - 12.0f - cyc * 44.0f;
+            float nScale = 0.78f + 0.28f * std::sin(cyc * 3.1416f);
+
+            GraphicsState ns = g.Save();
+            g.TranslateTransform(nx, ny);
+            g.ScaleTransform(nScale, nScale);
+            for (int pass = 0; pass < 2; ++pass) {
+                GraphicsState ps = g.Save();
+                if (pass == 0) g.TranslateTransform(0.8f, 1.0f);
+                Color c = pass == 0 ? mkCol(26, 28, 38, alpha * 0.65f) : mkCol(eyeC.GetR(), eyeC.GetG(), eyeC.GetB(), alpha);
+                SolidBrush br(c);
+                Pen pen(c, 1.6f);
+                pen.SetStartCap(LineCapRound); pen.SetEndCap(LineCapRound); pen.SetLineJoin(LineJoinRound);
+                g.FillEllipse(&br, -3.2f, -2.2f, 5.2f, 3.8f);
+                if (nc.dbl) {
+                    PointF pts[4] = { { 1.6f, -0.6f }, { 1.6f, -11.5f }, { 8.4f, -13.2f }, { 8.4f, -2.4f } };
+                    g.DrawLines(&pen, pts, 4);
+                    g.FillEllipse(&br, 3.6f, -4.0f, 5.2f, 3.8f);
+                } else {
+                    g.DrawLine(&pen, 1.6f, -0.6f, 1.6f, -11.5f);
+                    g.DrawBezier(&pen, 1.6f, -11.5f, 4.4f, -11.0f, 6.0f, -9.4f, 6.2f, -7.5f);
+                }
+                g.Restore(ps);
+            }
+            g.Restore(ns);
+        }
+
+        g.Restore(st);
+    }
 
     static void drawHeadFeatures(Gdiplus::Graphics& g, Pt center, const CatPhysics& physics, EyeColorTheme eyeTheme, const SkinSpec& skin,
                                  float scruffStartle = 0.0f, float scruffWide = 0.0f, bool overrideSkinIris = false) {
@@ -2002,8 +2440,8 @@ private:
         g.RotateTransform(physics.headTilt.value * RadToDeg);
         if (skin.shape.headScale != 1.0f) g.ScaleTransform(skin.shape.headScale, skin.shape.headScale);
 
-        float yawRad = physics.headYaw.value * 0.50f;
-        float pitchRad = physics.headPitch.value * 0.36f;
+        float yawRad = physics.headYaw.value * kurorig::YawPerUnit;
+        float pitchRad = physics.headPitch.value * kurorig::PitchPerUnit;
 
         if (isDazed(skin)) {
             drawDazedFace(g, physics, eyeTheme, yawRad, pitchRad, skin, scruffStartle, scruffWide);
@@ -2189,14 +2627,12 @@ private:
         GraphicsState st = g.Save();
         g.TranslateTransform(center.x, center.y);
 
-        // Upper-narrow, lower-wide rounded inverted-triangle / pear-teardrop yawn contour
+        // Wide upper lip, narrower rounded lower jaw — true inverted-triangle (▼) cute cat yawn
         GraphicsPath mouth;
-        mouth.AddBezier(0.0f, -ry * 0.92f, rx * 0.34f, -ry * 0.92f, rx * 0.52f, -ry * 0.50f, rx * 0.68f, -ry * 0.12f);
-        mouth.AddBezier(rx * 0.68f, -ry * 0.12f, rx * 0.86f, ry * 0.16f, rx * 1.06f, ry * 0.20f, rx * 1.02f, ry * 0.46f);
-        mouth.AddBezier(rx * 1.02f, ry * 0.46f, rx * 0.98f, ry * 0.78f, rx * 0.48f, ry, 0.0f, ry);
-        mouth.AddBezier(0.0f, ry, -rx * 0.48f, ry, -rx * 0.98f, ry * 0.78f, -rx * 1.02f, ry * 0.46f);
-        mouth.AddBezier(-rx * 1.02f, ry * 0.46f, -rx * 1.06f, ry * 0.20f, -rx * 0.86f, ry * 0.16f, -rx * 0.68f, -ry * 0.12f);
-        mouth.AddBezier(-rx * 0.68f, -ry * 0.12f, -rx * 0.52f, -ry * 0.50f, -rx * 0.34f, -ry * 0.92f, 0.0f, -ry * 0.92f);
+        mouth.AddBezier(0.0f, -ry * 0.86f, rx * 0.62f, -ry * 0.88f, rx * 1.06f, -ry * 0.64f, rx * 0.96f, -ry * 0.18f);
+        mouth.AddBezier(rx * 0.96f, -ry * 0.18f, rx * 0.84f, ry * 0.34f, rx * 0.42f, ry * 0.96f, 0.0f, ry * 1.02f);
+        mouth.AddBezier(0.0f, ry * 1.02f, -rx * 0.42f, ry * 0.96f, -rx * 0.84f, ry * 0.34f, -rx * 0.96f, -ry * 0.18f);
+        mouth.AddBezier(-rx * 0.96f, -ry * 0.18f, -rx * 1.06f, -ry * 0.64f, -rx * 0.62f, -ry * 0.88f, 0.0f, -ry * 0.86f);
         mouth.CloseFigure();
 
         SolidBrush bgBrush(Color(250, 194, 46, 61));
@@ -2376,109 +2812,125 @@ private:
         float rx = isSiameseEye ? (11.4f + hunt * 1.3f) : (12.0f + hunt * 1.1f);
         float ry = isSiameseEye ? (9.8f + hunt * 2.0f) : (10.8f + hunt * 1.8f);
 
-        GraphicsPath eyeClip;
-        eyeClip.AddEllipse(-rx, -ry, rx * 2.0f, ry * 2.0f);
-        GraphicsState cs = g.Save();
-        g.SetClip(&eyeClip, CombineModeIntersect);
-        // Leave covered pixels untouched so the underlying face remains seamless.
         float closure = std::clamp(std::max(physics.effectiveEyeClosure(), scruffStartle * 0.44f), 0.0f, 1.0f);
         if (closure >= 1.0f) {
-            g.Restore(cs);
             g.Restore(st);
             return;
         }
-        RectF opening(-rx - 2.0f, -ry + 2.0f * ry * closure,
-                      2.0f * rx + 4.0f, 2.0f * ry * (1.0f - closure));
-        if (closure > 0.0f) g.SetClip(opening, CombineModeIntersect);
 
-        // Angry furrowed V-brow slant clipped cleanly inside the eye opening
-        // (avoids painting flat solid eyebrows across gradient fur like Siamese!)
-        float anger = std::clamp(physics.angerIntensity.value, 0.0f, 1.0f);
-        if (anger > 0.08f) {
-            float drop = anger * 8.2f;
-            GraphicsPath angryCut;
-            PointF cutPts[4] = {
-                PointF(-rx - 2.0f, -ry + (isLeft ? 1.0f : drop)),
-                PointF( rx + 2.0f, -ry + (isLeft ? drop : 1.0f)),
-                PointF( rx + 2.0f,  ry + 2.0f),
-                PointF(-rx - 2.0f,  ry + 2.0f)
-            };
-            angryCut.AddPolygon(cutPts, 4);
-            g.SetClip(&angryCut, CombineModeIntersect);
-        }
+        // GDI+ SetClip(GraphicsPath*) is 1-bit hard-aliased (causes jagged eye edges on Windows 10/11).
+        // Render the clipped eye at 2x supersampling into a tiny 80x80 PARGB bitmap and composite
+        // back with high-quality bicubic filtering for Retina-smooth anti-aliased eye rims & lids.
+        constexpr float kEyeHalf = 20.0f;
+        constexpr float kSS = 2.0f;
+        constexpr int kEyeBmp = (int)(kEyeHalf * 2.0f * kSS); // 80x80
+        Bitmap* eyeBmpPtr = cachedScratchBitmap(kEyeBmp, kEyeBmp);
+        if (!eyeBmpPtr) return;
+        Bitmap& eyeBmp = *eyeBmpPtr;
+        {
+            Graphics eg(&eyeBmp);
+            eg.SetSmoothingMode(SmoothingModeHighQuality);
+            eg.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+            eg.SetCompositingQuality(CompositingQualityHighQuality);
+            eg.Clear(Color(0, 0, 0, 0));
+            eg.ScaleTransform(kSS, kSS);
+            eg.TranslateTransform(kEyeHalf, kEyeHalf);
 
-        SolidBrush irisBrush(eyeCol);
-        g.FillRectangle(&irisBrush, -rx - 1.0f, -ry - 1.0f, rx * 2.0f + 2.0f, ry * 2.0f + 2.0f);
-        if (siameseBlue) {
-            LinearGradientBrush irisGrad(PointF(0.0f, -ry - 1.0f), PointF(0.0f, ry + 1.0f), Color(255, 143, 196, 230), Color(255, 219, 241, 252));
-            irisGrad.SetWrapMode(WrapModeTileFlipXY);
-            Color iCols[3] = { Color(255, 143, 196, 230), Color(255, 181, 222, 245), Color(255, 219, 241, 252) };
-            REAL iPos[3] = { 0.0f, 0.55f, 1.0f };
-            irisGrad.SetInterpolationColors(iCols, iPos, 3);
-            g.FillRectangle(&irisGrad, -rx - 1.0f, -ry - 1.0f, rx * 2.0f + 2.0f, ry * 2.0f + 2.0f);
-        }
+            GraphicsPath eyeClip;
+            eyeClip.AddEllipse(-rx, -ry, rx * 2.0f, ry * 2.0f);
+            eg.SetClip(&eyeClip, CombineModeIntersect);
+            RectF opening(-rx - 2.0f, -ry + 2.0f * ry * closure,
+                          2.0f * rx + 4.0f, 2.0f * ry * (1.0f - closure));
+            if (closure > 0.0f) eg.SetClip(opening, CombineModeIntersect);
 
-        if (!customIris && eyeTheme == EyeColorTheme::OliveGold) {
-            LinearGradientBrush iris(PointF(0, -ry - 1), PointF(0, ry + 1),
-                                     blendColor(eyeCol, tabby::brown(), .39f),
-                                     blendColor(eyeCol, Color(250, 237, 189), .31f));
-            g.FillRectangle(&iris, -rx - 1.f, -ry - 1.f, 2 * rx + 2, 2 * ry + 2);
-            Pen eyeRim(tabby::dark(), 1.5f);
-            g.DrawEllipse(&eyeRim, -rx + .4f, -ry + .4f, 2 * rx - .8f, 2 * ry - .8f);
-        }
+            // Angry furrowed V-brow slant clipped cleanly inside the eye opening
+            float anger = std::clamp(physics.angerIntensity.value, 0.0f, 1.0f);
+            if (anger > 0.08f) {
+                float drop = anger * 8.2f;
+                GraphicsPath angryCut;
+                PointF cutPts[4] = {
+                    PointF(-rx - 2.0f, -ry + (isLeft ? 1.0f : drop)),
+                    PointF( rx + 2.0f, -ry + (isLeft ? drop : 1.0f)),
+                    PointF( rx + 2.0f,  ry + 2.0f),
+                    PointF(-rx - 2.0f,  ry + 2.0f)
+                };
+                angryCut.AddPolygon(cutPts, 4);
+                eg.SetClip(&angryCut, CombineModeIntersect);
+            }
 
-        // Pupil morphs smoothly from vertical slit -> HUGE round black boba pupil!
-        Pt gaze = physics.eyeGaze.point();
-        float px = gaze.x * (4.2f - hunt * 1.2f);
-        float py = gaze.y * (3.6f - hunt * 1.0f);
-        float pScale = physics.pupilScale.value;
-        float normalW = 5.0f * pScale;
-        float normalH = 13.5f * std::min(1.12f, pScale);
-        float huntDiam = 18.8f;
-        float pupilW = normalW + (huntDiam - normalW) * hunt;
-        float pupilH = normalH + (huntDiam - normalH) * hunt;
+            SolidBrush irisBrush(eyeCol);
+            eg.FillRectangle(&irisBrush, -rx - 1.0f, -ry - 1.0f, rx * 2.0f + 2.0f, ry * 2.0f + 2.0f);
+            if (siameseBlue) {
+                LinearGradientBrush irisGrad(PointF(0.0f, -ry - 1.0f), PointF(0.0f, ry + 1.0f), Color(255, 143, 196, 230), Color(255, 219, 241, 252));
+                irisGrad.SetWrapMode(WrapModeTileFlipXY);
+                Color iCols[3] = { Color(255, 143, 196, 230), Color(255, 181, 222, 245), Color(255, 219, 241, 252) };
+                REAL iPos[3] = { 0.0f, 0.55f, 1.0f };
+                irisGrad.SetInterpolationColors(iCols, iPos, 3);
+                eg.FillRectangle(&irisGrad, -rx - 1.0f, -ry - 1.0f, rx * 2.0f + 2.0f, ry * 2.0f + 2.0f);
+            }
 
-        // Reference iris colors, blended only in a narrow ring around the moving pupil.
-        if (!customIris && eyeTheme == EyeColorTheme::ReferenceHazel) {
-            for (int i = 0; i <= 24; ++i) {
-                float t = i / 24.0f, mix = t*t*(3-2*t), rim = (1-t)*2.2f;
-                SolidBrush ring(Color(255, (BYTE)std::lround(218-77*mix),
-                    (BYTE)std::lround(178-33*mix), (BYTE)std::lround(87+41*mix)));
-                g.FillEllipse(&ring, px-pupilW*0.5f-rim, py-pupilH*0.5f-rim,
-                    pupilW+2*rim, pupilH+2*rim);
+            if (!customIris && eyeTheme == EyeColorTheme::OliveGold) {
+                LinearGradientBrush iris(PointF(0, -ry - 1), PointF(0, ry + 1),
+                                         blendColor(eyeCol, tabby::brown(), .39f),
+                                         blendColor(eyeCol, Color(250, 237, 189), .31f));
+                eg.FillRectangle(&iris, -rx - 1.f, -ry - 1.f, 2 * rx + 2, 2 * ry + 2);
+                Pen eyeRim(tabby::dark(), 1.5f);
+                eg.DrawEllipse(&eyeRim, -rx + .4f, -ry + .4f, 2 * rx - .8f, 2 * ry - .8f);
+            }
+
+            // Pupil morphs smoothly from vertical slit -> HUGE round black boba pupil!
+            Pt gaze = physics.eyeGaze.point();
+            float px = gaze.x * (4.2f - hunt * 1.2f);
+            float py = gaze.y * (3.6f - hunt * 1.0f);
+            float pScale = physics.pupilScale.value;
+            float normalW = 5.0f * pScale;
+            float normalH = 13.5f * std::min(1.12f, pScale);
+            float huntDiam = 18.8f;
+            float pupilW = normalW + (huntDiam - normalW) * hunt;
+            float pupilH = normalH + (huntDiam - normalH) * hunt;
+
+            // Reference iris colors, blended only in a narrow ring around the moving pupil.
+            if (!customIris && eyeTheme == EyeColorTheme::ReferenceHazel) {
+                for (int i = 0; i <= 24; ++i) {
+                    float t = i / 24.0f, mix = t*t*(3-2*t), rim = (1-t)*2.2f;
+                    SolidBrush ring(Color(255, (BYTE)std::lround(218-77*mix),
+                        (BYTE)std::lround(178-33*mix), (BYTE)std::lround(87+41*mix)));
+                    eg.FillEllipse(&ring, px-pupilW*0.5f-rim, py-pupilH*0.5f-rim,
+                        pupilW+2*rim, pupilH+2*rim);
+                }
+            }
+            SolidBrush pupilBrush(activePupil.set ? col(activePupil) : catBlack());
+            eg.FillEllipse(&pupilBrush, px - pupilW * 0.5f, py - pupilH * 0.5f, pupilW, pupilH);
+
+            // Tiny crisp white sparkle glint as boba hunting pupils dilate (and delicate catchlight on Siamese blue eyes!)
+            if (hunt > 0.25f) {
+                BYTE ga = (BYTE)(std::min(1.0f, (hunt - 0.25f) / 0.55f) * 235.0f);
+                float gr = 2.1f + hunt * 0.9f;
+                SolidBrush gb(Color(ga, 255, 255, 255));
+                eg.FillEllipse(&gb, px - pupilW * 0.22f - gr * 0.5f, py - pupilH * 0.22f - gr * 0.5f, gr * 2.0f, gr * 2.0f);
+                // Second crisp lower specular dot when scruff-lifted aloft for extra watery pleading appeal
+                if (scruffWide > 0.25f) {
+                    BYTE sAlpha = (BYTE)(std::min(1.0f, (scruffWide - 0.25f) / 0.45f) * 0.88f * 255.0f);
+                    SolidBrush sb2(Color(sAlpha, 255, 255, 255));
+                    float sr = 1.45f;
+                    eg.FillEllipse(&sb2, px + pupilW * 0.16f - sr, py + pupilH * 0.18f - sr, sr * 2.0f, sr * 2.0f);
+                }
+            } else if (siameseBlue) {
+                float gr = 1.65f;
+                SolidBrush gb(Color(220, 255, 255, 255));
+                eg.FillEllipse(&gb, px - 2.9f - gr, py - 3.6f - gr, gr * 2.0f, gr * 2.0f);
             }
         }
-        SolidBrush pupilBrush(activePupil.set ? col(activePupil) : catBlack());
-        g.FillEllipse(&pupilBrush, px - pupilW * 0.5f, py - pupilH * 0.5f, pupilW, pupilH);
-
-        // Tiny crisp white sparkle glint as boba hunting pupils dilate (and delicate catchlight on Siamese blue eyes!)
-        if (hunt > 0.25f) {
-            BYTE ga = (BYTE)(std::min(1.0f, (hunt - 0.25f) / 0.55f) * 235.0f);
-            float gr = 2.1f + hunt * 0.9f;
-            SolidBrush gb(Color(ga, 255, 255, 255));
-            g.FillEllipse(&gb, px - pupilW * 0.22f - gr * 0.5f, py - pupilH * 0.22f - gr * 0.5f, gr * 2.0f, gr * 2.0f);
-            // Second crisp lower specular dot when scruff-lifted aloft for extra watery pleading appeal
-            if (scruffWide > 0.25f) {
-                BYTE sAlpha = (BYTE)(std::min(1.0f, (scruffWide - 0.25f) / 0.45f) * 0.88f * 255.0f);
-                SolidBrush sb2(Color(sAlpha, 255, 255, 255));
-                float sr = 1.45f;
-                g.FillEllipse(&sb2, px + pupilW * 0.16f - sr, py + pupilH * 0.18f - sr, sr * 2.0f, sr * 2.0f);
-            }
-        } else if (siameseBlue) {
-            float gr = 1.65f;
-            SolidBrush gb(Color(220, 255, 255, 255));
-            g.FillEllipse(&gb, px - 2.9f - gr, py - 3.6f - gr, gr * 2.0f, gr * 2.0f);
-        }
-
-        g.Restore(cs);
+        g.DrawImage(&eyeBmp, RectF(-kEyeHalf, -kEyeHalf, kEyeHalf * 2.0f, kEyeHalf * 2.0f),
+                    0.0f, 0.0f, (REAL)kEyeBmp, (REAL)kEyeBmp, UnitPixel);
         g.Restore(st);
     }
 
     static void drawWhiskers3D(Gdiplus::Graphics& g, float yawRad, float pitchRad, const CatPhysics& physics, const SkinSpec& skin) {
         using namespace Gdiplus;
         float wiggle = std::sin(physics.time * 4.5f) * (std::max(physics.petHeadIntensity, physics.petBodyIntensity) * 1.2f);
-        Pen pen(col(skin.palette.whiskers), 1.05f);
-        pen.SetStartCap(LineCapRound); pen.SetEndCap(LineCapRound);
+        Pen pen(col(skin.palette.whiskers), 1.35f);
+        pen.SetStartCap(LineCapRound); pen.SetEndCap(LineCapRound); pen.SetLineJoin(LineJoinRound);
 
         const float rows[3][3] = {
             { 10.5f, 36.5f, 8.8f + wiggle },
@@ -2590,7 +3042,7 @@ private:
     static void drawDecorations(Gdiplus::Graphics& g, float seatX, float seatY, Pt head, const CatPhysics& physics, const SkinSpec& skin,
                                 const Pt* neckOverride = nullptr, const Pt* tailTipOverride = nullptr, int anchorMask = 0xF) {
         using namespace Gdiplus;
-        float yawRad = physics.headYaw.value * 0.50f, pitchRad = physics.headPitch.value * 0.36f;
+        float yawRad = physics.headYaw.value * kurorig::YawPerUnit, pitchRad = physics.headPitch.value * kurorig::PitchPerUnit;
         for (const SkinDecoration& d : skin.decorations) {
             if ((anchorMask & anchorBit(d.anchor)) == 0) continue;
             Bitmap* img = decorationBitmap(d);
@@ -2644,7 +3096,7 @@ private:
 
     // MARK: - Front Paws
 
-    static void drawFrontPaws(Gdiplus::Graphics& g, float seatX, float seatY, float breath, const CatPhysics& physics, const SkinSpec& skin) {
+    static void drawFrontPaws(Gdiplus::Graphics& g, float seatX, float seatY, float breath, const CatPhysics& physics, const SkinSpec& skin, bool outlineOnly = false) {
         Pt lPos = physics.leftPaw.point();
         Pt rPos = physics.rightPaw.point();
 
@@ -2665,11 +3117,11 @@ private:
 
         const bool approved = !skin.palette.points.set && skin.palette.belly.set && skin.palette.belly.sameAs(skin.palette.legs) && !skin.idleLegsTinted && !skin.marks.empty();
         float shoulderDepth = std::max(16.0f, (approved ? 43.0f : 49.0f) - armRY);
-        const float faceClearance = approved ? 52.0f : 51.0f;
-        float tiltChinDrop = std::fabs(std::sin(physics.headTilt.value)) * 18.0f * skin.shape.headScale;
-        float scaledClearance = faceClearance * skin.shape.headScale + tiltChinDrop;
-        float headBottom = 126.0f + headLift + physics.headOffsetY.value + physics.headPitch.value * 4.8f
-                         + breath * 1.1f + lieS * 60.0f + scaledClearance;
+        float tiltChinDrop = std::fabs(std::sin(physics.headTilt.value)) * 20.0f * skin.shape.cheekFullness * skin.shape.headScale
+                           + std::max(0.0f, skin.shape.headScale - 1.0f) * 32.0f;
+        float faceClearance = (approved ? 52.0f : 51.0f) + tiltChinDrop;
+        float headBottom = 126.0f + headLift + lieS * 60.0f + physics.headOffsetY.value + physics.headPitch.value * 4.8f
+                         + breath * 1.1f + faceClearance;
         float idleAlpha = 1.0f - smoothstep(0.48f, 0.78f, lieS);
         auto shoulder = [&](float x) -> Pt {
             float sy=physics.bodySquash.value*(1.0f-lieS*0.42f), sx=(1+(1-physics.bodySquash.value)*0.55f)*(1.0f+lieS*0.03f);
@@ -2682,37 +3134,38 @@ private:
         Pt rightIdleTop = { rightShoulder.x - lieS * 5.0f, rightShoulder.y + lieS * 16.0f };
         float idleBotX = bd.idleBotX * bw * armSp - lieS * 4.5f;
         float idleBotY = std::max(std::max(leftIdleTop.y, rightIdleTop.y) + 14.0f, (seatY + 12.0f + (armLen - 1.0f) * 16.0f) + lieS * 12.0f);
+        float elbowFlare = (armLen - 1.0f) * 18.0f;
 
         if (lDist < 6.0f && !physics.leftPawOnMouse && !physics.leftPawTyping) {
             if (lieS < 0.78f) {
                 auto drawLeftIdle = [&](Gdiplus::Graphics& lg) {
-                    drawIdleFrontLeg(lg, leftIdleTop, { seatX - idleBotX, idleBotY }, true, skin);
+                    drawIdleFrontLeg(lg, leftIdleTop, { seatX - idleBotX, idleBotY }, true, skin, outlineOnly);
                 };
-                if (idleAlpha < 0.999f) drawWithLayerAlpha(g, idleAlpha, drawLeftIdle);
+                if (!outlineOnly && idleAlpha < 0.999f) drawWithLayerAlpha(g, idleAlpha, drawLeftIdle);
                 else drawLeftIdle(g);
             }
         } else {
-            Pt mid = { (leftShoulder.x + lPos.x) * 0.5f - (physics.leftPawOnMouse ? 8.0f : 4.0f),
-                       std::max((leftShoulder.y + lPos.y) * 0.5f - 6.0f, headBottom - 1.0f) };
-            drawLimb(g, leftShoulder, mid, lPos, limbStartW, limbEndW, false, 0.78f, skin, true);
+            Pt mid = { (leftShoulder.x + lPos.x) * 0.5f - (physics.leftPawOnMouse ? 8.0f : 6.0f) - elbowFlare,
+                       (leftShoulder.y + lPos.y) * 0.5f - 6.0f + elbowFlare * 0.4f };
+            drawLimb(g, leftShoulder, mid, lPos, limbStartW, limbEndW, false, 0.78f, skin, true, outlineOnly);
         }
 
         if (rDist < 6.0f && !physics.rightPawTyping) {
             if (lieS < 0.78f) {
                 auto drawRightIdle = [&](Gdiplus::Graphics& lg) {
-                    drawIdleFrontLeg(lg, rightIdleTop, { seatX + idleBotX, idleBotY }, false, skin);
+                    drawIdleFrontLeg(lg, rightIdleTop, { seatX + idleBotX, idleBotY }, false, skin, outlineOnly);
                 };
-                if (idleAlpha < 0.999f) drawWithLayerAlpha(g, idleAlpha, drawRightIdle);
+                if (!outlineOnly && idleAlpha < 0.999f) drawWithLayerAlpha(g, idleAlpha, drawRightIdle);
                 else drawRightIdle(g);
             }
         } else {
-            Pt mid = { (rightShoulder.x + rPos.x) * 0.5f + 4.0f,
-                       std::max((rightShoulder.y + rPos.y) * 0.5f - 6.0f, headBottom - 1.0f) };
-            drawLimb(g, rightShoulder, mid, rPos, limbStartW, limbEndW, true, 0.78f, skin, true);
+            Pt mid = { (rightShoulder.x + rPos.x) * 0.5f + 4.0f + elbowFlare,
+                       (rightShoulder.y + rPos.y) * 0.5f - 6.0f + elbowFlare * 0.4f };
+            drawLimb(g, rightShoulder, mid, rPos, limbStartW, limbEndW, true, 0.78f, skin, true, outlineOnly);
         }
     }
 
-    static void drawIdleFrontLeg(Gdiplus::Graphics& g, Pt top, Pt bottom, bool isLeft, const SkinSpec& skin) {
+    static void drawIdleFrontLeg(Gdiplus::Graphics& g, Pt top, Pt bottom, bool isLeft, const SkinSpec& skin, bool outlineOnly = false) {
         using namespace Gdiplus;
         const SkinPalette& pal = skin.palette;
         float sign = isLeft ? -1.0f : 1.0f;
@@ -2720,9 +3173,10 @@ private:
             Pt shoulder = {top.x + sign * 2.0f, top.y + 13.0f};
             Pt elbow = {top.x + sign * 9.0f, top.y + 20.0f};
             Pt paw = {top.x + sign * 8.0f, top.y + 34.0f};
-            drawLimb(g, shoulder, elbow, paw, 19.0f, 14.0f, !isLeft, 0.78f, skin, true);
+            drawLimb(g, shoulder, elbow, paw, 19.0f, 14.0f, !isLeft, 0.78f, skin, true, outlineOnly);
             return;
         }
+        if (outlineOnly) return;
 
         if (skin.colorpoint()) {
             GraphicsPath lp;
@@ -2786,7 +3240,7 @@ private:
             g.FillRectangle(&cuff, bottom.x-7.5f, bottom.y-13.0f, 15.0f, 13.0f);
             g.FillEllipse(&cuff, bottom.x-7.5f, bottom.y-5.0f, 15.0f, 10.0f);
         }
-        Pen p(isClassicBlack(skin) ? blackOutline(190) : col(pal.crease), 1.45f);
+        Pen p(isClassicBlackRim(skin) ? blackOutline(190) : col(pal.crease), 1.45f);
         p.SetStartCap(LineCapRound); p.SetEndCap(LineCapRound);
 
         GraphicsPath p1;
@@ -2860,7 +3314,7 @@ private:
     }
 
     static void drawLimb(Gdiplus::Graphics& g, Pt start, Pt ctrl, Pt end, float startW, float endW, bool outlineOnLeft,
-        float outlineAlpha, const SkinSpec& skin, bool frontPaw = false) {
+        float outlineAlpha, const SkinSpec& skin, bool frontPaw = false, bool outlineOnly = false) {
         using namespace Gdiplus;
         const SkinPalette& pal = skin.palette;
         constexpr int steps = 14;
@@ -2894,17 +3348,22 @@ private:
         RectF pawRect(end.x - pawR, end.y - pawR * 0.85f, pawR * 2.0f, pawR * 1.7f);
         const SkinColor& lineCol = pal.outline.set ? pal.outline : pal.crease;
 
+        if (outlineOnly) {
+            if (!whiteOutlineEnabled()) return;
+            RectF rimPawRect = pawRect;
+            if (isDazed(skin)) rimPawRect.Inflate(pawR * 0.28f, pawR * 0.46f);
+            Pen outPen(blackOutline(), BlackOutlineW * 2.0f);
+            outPen.SetStartCap(LineCapRound); outPen.SetEndCap(LineCapRound); outPen.SetLineJoin(LineJoinRound);
+            if (leftEdge.size() > 1) {
+                g.DrawLines(&outPen, leftEdge.data(), (INT)leftEdge.size());
+                g.DrawLines(&outPen, rightEdge.data(), (INT)rightEdge.size());
+            }
+            g.DrawEllipse(&outPen, rimPawRect);
+            return;
+        }
+
         if (isDazed(skin)) {
             pawRect.Inflate(pawR * 0.28f, pawR * 0.46f);
-            if (whiteOutlineEnabled()) {
-                Pen outPen(blackOutline(), BlackOutlineW * 2.0f);
-                outPen.SetStartCap(LineCapRound); outPen.SetEndCap(LineCapRound); outPen.SetLineJoin(LineJoinRound);
-                if ((int)leftEdge.size() > 5) {
-                    g.DrawLines(&outPen, leftEdge.data() + 4, (INT)leftEdge.size() - 4);
-                    g.DrawLines(&outPen, rightEdge.data() + 4, (INT)rightEdge.size() - 4);
-                }
-                g.DrawEllipse(&outPen, pawRect);
-            }
             if (frontPaw) {
                 drawDazedArm(g, limbPath, leftEdge, rightEdge, pawRect);
             } else {
@@ -2915,16 +3374,6 @@ private:
             return;
         }
 
-        if (whiteOutlineEnabled()) {
-            Pen outPen(blackOutline(), BlackOutlineW * 2.0f);
-            outPen.SetStartCap(LineCapRound); outPen.SetEndCap(LineCapRound); outPen.SetLineJoin(LineJoinRound);
-            int rimStart = isClassicBlackRim(skin) ? 2 : 4;
-            if ((int)leftEdge.size() > rimStart + 1) {
-                g.DrawLines(&outPen, leftEdge.data() + rimStart, (INT)leftEdge.size() - rimStart);
-                g.DrawLines(&outPen, rightEdge.data() + rimStart, (INT)rightEdge.size() - rimStart);
-            }
-            g.DrawEllipse(&outPen, pawRect);
-        }
         if (isTabby(skin)) {
             tabby::drawLimb(g, limbPath, pawRect, start, ctrl, end, startW, endW);
         } else if (!skin.colorpoint()) {
@@ -3012,7 +3461,7 @@ private:
             g.FillEllipse(&pawBrush, pawRect);
 
             const auto& outerEdge = outlineOnLeft ? rightEdge : leftEdge;
-            Pen op(withAlpha(lineCol, 184), 1.25f);
+            Pen op(colMul(lineCol, 0.72f), 1.25f);
             op.SetStartCap(LineCapRound); op.SetEndCap(LineCapRound); op.SetLineJoin(LineJoinRound);
             g.DrawLines(&op, outerEdge.data() + 3, (INT)outerEdge.size() - 4);
         }
@@ -3020,10 +3469,10 @@ private:
         const auto& hiEdge = outlineOnLeft ? leftEdge : rightEdge;
         int startIdx = 2;
         int endIdx = (int)((hiEdge.size() - 1) * 0.68f);
-        if (endIdx > startIdx && !isClassicBlack(skin)) {
+        if (endIdx > startIdx) {
             Color sc = skin.colorpoint()
-                ? withAlpha(lineCol, (BYTE)(outlineAlpha * 199))
-                : creaseWith(pal.crease, (BYTE)(outlineAlpha * 229));
+                ? colMul(lineCol, outlineAlpha * 0.78f)
+                : colMul(pal.crease, outlineAlpha * 0.90f);
             Pen hp(sc, 1.35f);
             hp.SetStartCap(LineCapRound); hp.SetEndCap(LineCapRound); hp.SetLineJoin(LineJoinRound);
             g.DrawLines(&hp, hiEdge.data() + startIdx, endIdx - startIdx + 1);
@@ -3035,9 +3484,10 @@ private:
     static void drawFloatingKeycaps(Gdiplus::Graphics& g, const CatPhysics& physics, bool flipped = false) {
         using namespace Gdiplus;
         FontFamily ff(L"Segoe UI");
-        StringFormat sf;
+        StringFormat sf(StringFormat::GenericTypographic());
         sf.SetAlignment(StringAlignmentCenter);
         sf.SetLineAlignment(StringAlignmentCenter);
+        sf.SetFormatFlags(sf.GetFormatFlags() | StringFormatFlagsNoClip);
 
         for (const auto& b : physics.floatingKeycaps) {
             float prog = b.age / b.lifetime;
@@ -3054,7 +3504,7 @@ private:
 
             size_t len = b.label.size();
             bool hasWide = !b.label.empty() && b.label[0] > 0x7F;
-            float w = (len <= 1) ? 23.0f : (len == 2 ? (hasWide ? 34.0f : 30.0f) : 38.0f);
+            float w = (len <= 1) ? (hasWide ? 26.0f : 23.0f) : (len == 2 ? (hasWide ? 34.0f : 30.0f) : 38.0f);
             float h = 22.0f;
 
             GraphicsState st = g.Save();
@@ -3074,9 +3524,24 @@ private:
             g.FillPath(&faceBrush, &facePath);
             g.DrawPath(&facePen, &facePath);
 
-            Font font(&ff, len <= 1 ? 11.0f : 9.2f, FontStyleBold, UnitPixel);
-            SolidBrush txtBrush(Color(a, 31, 31, 36));
-            g.DrawString(b.label.c_str(), -1, &font, RectF(-w * 0.5f, -h * 0.5f, w, h), &sf, &txtBrush);
+            // Draw Enter (↵) and Space (␣) as crisp vector icons so Windows 10 Segoe UI missing glyphs never clip
+            if (b.label == L"\u21B5") {
+                Pen ep(Color(a, 31, 31, 36), 1.85f);
+                ep.SetStartCap(LineCapRound); ep.SetEndCap(LineCapRound); ep.SetLineJoin(LineJoinRound);
+                PointF shaft[3] = { PointF(5.2f, -3.4f), PointF(5.2f, 1.8f), PointF(-4.6f, 1.8f) };
+                g.DrawLines(&ep, shaft, 3);
+                PointF head[3] = { PointF(-1.6f, -1.1f), PointF(-5.0f, 1.8f), PointF(-1.6f, 4.7f) };
+                g.DrawLines(&ep, head, 3);
+            } else if (b.label == L"\u2423") {
+                Pen sp(Color(a, 31, 31, 36), 1.85f);
+                sp.SetStartCap(LineCapRound); sp.SetEndCap(LineCapRound); sp.SetLineJoin(LineJoinRound);
+                PointF bracket[4] = { PointF(-5.5f, -0.5f), PointF(-5.5f, 3.0f), PointF(5.5f, 3.0f), PointF(5.5f, -0.5f) };
+                g.DrawLines(&sp, bracket, 4);
+            } else {
+                Font font(&ff, len <= 1 ? 11.0f : 9.2f, FontStyleBold, UnitPixel);
+                SolidBrush txtBrush(Color(a, 31, 31, 36));
+                g.DrawString(b.label.c_str(), -1, &font, RectF(-w * 0.5f, -h * 0.5f, w, h), &sf, &txtBrush);
+            }
 
             g.Restore(st);
         }
@@ -3099,10 +3564,12 @@ private:
                 Font f(&ff, 11.0f + p * 3.0f, FontStyleBold, UnitPixel);
                 SolidBrush sb(c);
                 if (flipped) {
+                    RectF mZ;
+                    g.MeasureString(L"z", -1, &f, PointF(0.0f, 0.0f), &mZ);
                     GraphicsState zs = g.Save();
-                    g.TranslateTransform(sp.position.x, sp.position.y);
+                    g.TranslateTransform(sp.position.x + mZ.Width * 0.5f, sp.position.y);
                     g.ScaleTransform(-1.0f, 1.0f);
-                    g.DrawString(L"z", -1, &f, PointF(0.0f, 0.0f), &sb);
+                    g.DrawString(L"z", -1, &f, PointF(-mZ.Width * 0.5f, 0.0f), &sb);
                     g.Restore(zs);
                 } else {
                     g.DrawString(L"z", -1, &f, PointF(sp.position.x, sp.position.y), &sb);
@@ -3179,11 +3646,12 @@ private:
         int bw = std::max(1, (int)std::ceil(w * ss));
         int bh = std::max(1, (int)std::ceil(h * ss));
 
-        Bitmap layer(bw, bh, PixelFormat32bppPARGB);
-        if (layer.GetLastStatus() != Ok) {
+        Bitmap* layerPtr = cachedScratchBitmap(bw, bh);
+        if (!layerPtr || layerPtr->GetLastStatus() != Ok) {
             drawFn(g);
             return;
         }
+        Bitmap& layer = *layerPtr;
         {
             Graphics lg(&layer);
             lg.Clear(Color(0, 0, 0, 0));
@@ -3349,6 +3817,292 @@ private:
     };
 
     /// Top-level Xiao Douni scene router inside KuroCat's 360x320 canvas.
+    // MARK: - Beagle Duodong (比格瞳 · 彩蛋限定) Layered Sprite Rig
+    static Gdiplus::Bitmap* getBeagleAtlasBitmap() {
+        static Gdiplus::Bitmap* bmp = []() -> Gdiplus::Bitmap* {
+            HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, beagle_atlas::kPngSize);
+            if (!hMem) return nullptr;
+            void* ptr = GlobalLock(hMem);
+            if (ptr) { std::memcpy(ptr, beagle_atlas::kPngData, beagle_atlas::kPngSize); GlobalUnlock(hMem); }
+            IStream* stream = nullptr;
+            if (FAILED(CreateStreamOnHGlobal(hMem, TRUE, &stream)) || !stream) { GlobalFree(hMem); return nullptr; }
+            Gdiplus::Bitmap* out = Gdiplus::Bitmap::FromStream(stream);
+            stream->Release();
+            if (!out || out->GetLastStatus() != Gdiplus::Ok) { delete out; return nullptr; }
+            return out;
+        }();
+        return bmp;
+    }
+
+    static void drawBeagleSprite(Gdiplus::Graphics& g, Gdiplus::Bitmap* atlas, beagle_atlas::SpriteId id,
+                                 float cx, float cy, float sc, float rotRad = 0.0f, bool flipX = false) {
+        if (!atlas) return;
+        const beagle_atlas::Rect& r = beagle_atlas::kRects[id];
+        float dw = r.w * sc, dh = r.h * sc;
+        Gdiplus::GraphicsState st = g.Save();
+        g.TranslateTransform(cx, cy);
+        if (rotRad != 0.0f) g.RotateTransform(rotRad * 57.29578f);
+        if (flipX) g.ScaleTransform(-1.0f, 1.0f);
+        g.DrawImage(atlas, Gdiplus::RectF(-dw * 0.5f, -dh * 0.5f, dw, dh),
+                    (Gdiplus::REAL)r.x, (Gdiplus::REAL)r.y, (Gdiplus::REAL)r.w, (Gdiplus::REAL)r.h, Gdiplus::UnitPixel);
+        g.Restore(st);
+    }
+
+    static void drawBeagleScene(Gdiplus::Graphics& g, const CatPhysics& physics, const SkinSpec& skin,
+                                const KeyboardSkinSpec& kbSkin, const CatSettings& settings) {
+        using namespace Gdiplus;
+        using namespace beagle_atlas;
+        EyeColorTheme eyeTheme = settings.eyeTheme;
+        float scruff = std::clamp(physics.scruffDrag.value, 0.0f, 1.0f);
+        float scruffS = smoothstep(0.0f, 1.0f, scruff);
+        float lie = std::clamp(physics.lieIntensity.value, 0.0f, 1.0f);
+        float sleepVal = std::max(lie, physics.sleepiness > 0.48f ? std::min(1.0f, (physics.sleepiness - 0.48f) / 0.35f) : 0.0f);
+        float sleepS = smoothstep(0.0f, 1.0f, sleepVal) * (1.0f - scruffS);
+        float anger = std::clamp(physics.angerIntensity.value, 0.0f, 1.0f);
+        float happy = std::max(physics.petHeadIntensity, physics.petBodyIntensity);
+        float t = physics.time;
+        float breath = std::sin(t * 2.3f) * 1.6f;
+        float seatX = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value;
+
+        constexpr float deskV2Scale = 0.405f;
+        float deskTx = 14.0f + physics.bodyShiftX.value;
+        constexpr float deskTy = 22.0f;
+
+        bool useDefaultRetroGrey = (kbSkin.id == "builtin:0");
+        Color kbDeckColor     = useDefaultRetroGrey ? Color(255, 185, 187, 187) : col(kbSkin.deck);
+        Color kbBevelColor    = useDefaultRetroGrey ? Color(255, 155, 157, 156) : col(kbSkin.base);
+        Color kbKeyColor      = useDefaultRetroGrey ? Color(255, 178, 180, 179) : col(kbSkin.key);
+        Color kbAccentColor   = useDefaultRetroGrey ? Color(255, 168, 170, 169) : col(kbSkin.accent);
+        Color mouseBodyColor  = useDefaultRetroGrey ? Color(255, 190, 192, 192) : col(kbSkin.mouseBody);
+        Color mouseWheelColor = useDefaultRetroGrey ? Color(255,  92,  89,  87) : col(kbSkin.wheel);
+        Color baseGlow        = useDefaultRetroGrey ? Color(255, 255, 214,  61) : eyeGlow(eyeTheme);
+        Color glowBaseColor   = (anger > 0.05f)
+            ? blendColor(baseGlow, Color(255, 255, 87, 36), std::min(0.88f, anger * 0.88f))
+            : baseGlow;
+        Color ink = skin.palette.outline.set ? col(skin.palette.outline) : douniInkColor();
+        constexpr float catLW = 10.8f;
+        constexpr float kbLW = 12.6f;
+
+        float impY = std::clamp(physics.kbImpactY.value, -0.4f, 1.3f);
+        float impT = std::clamp(physics.kbImpactTilt.value, -0.9f, 0.9f);
+        float leftPose = std::clamp(physics.douniLeftRaise.value, -1.08f, 1.08f);
+        float rightPose = std::clamp(physics.douniRightRaise.value, -1.08f, 1.08f);
+        float mouseBlend = std::clamp(physics.douniMouseBlend.value, 0.0f, 1.0f);
+        bool isTablet = physics.isTabletActive;
+
+        Pt mouseCenter = {
+            168.0f + physics.mouseOffset.point().x * 5.2f,
+            286.0f + physics.mouseOffset.point().y * 4.5f
+        };
+        float mousePress = std::max(physics.mousePressLeft.value, std::max(physics.mousePressRight.value, physics.mousePressMiddle.value));
+        Pt nibUV = douniTabletUV(physics.tabletNib.point());
+        Pt v2Nib = v2TabletPoint(nibUV.x, nibUV.y);
+        float tabletPress = std::clamp(physics.tabletPenPress.value, 0.0f, 1.0f);
+
+        auto drawV2DeskOnly = [&](float alpha, float dropY) {
+            if (alpha <= 0.01f) return;
+            drawWithRectLayerAlpha(g, 0.0f, 0.0f, 360.0f, 320.0f, alpha, [&](Graphics& lg) {
+                GraphicsState gs = lg.Save();
+                lg.TranslateTransform(deskTx, deskTy + dropY);
+                lg.ScaleTransform(deskV2Scale, deskV2Scale);
+                if (isTablet) {
+                    drawDouniComicTablet(lg, physics, kbDeckColor, kbBevelColor, kbKeyColor, kbAccentColor,
+                                         glowBaseColor, eyePrimary(eyeTheme), ink, catLW, mouseBlend < 0.18f);
+                } else {
+                    drawDouniComicMouse(lg, mouseCenter, physics.mousePressLeft.value, physics.mousePressRight.value,
+                                        mouseBodyColor, kbBevelColor, mouseWheelColor, glowBaseColor, ink, catLW, physics.mousePressMiddle.value);
+                }
+                drawDouniV2Keyboard(lg, physics, kbDeckColor, kbBevelColor, kbKeyColor, kbAccentColor, glowBaseColor,
+                                    settings.keyboardMarquee, ink, kbLW, impY, impT);
+                lg.Restore(gs);
+            });
+        };
+
+        Gdiplus::Bitmap* atlas = getBeagleAtlasBitmap();
+        if (!atlas) { if (scruffS < 0.50f) drawV2DeskOnly(1.0f, 0.0f); return; }
+
+        const float S = 0.56f;
+        const float SB = 1.48f;
+        float gazeX = std::clamp(physics.eyeGaze.point().x, -1.0f, 1.0f) * 4.5f;
+        float gazeY = std::clamp(physics.eyeGaze.point().y, -1.0f, 1.0f) * 3.5f;
+        bool blinking = physics.blinkProgress() > 0.55f;
+
+        auto drawFace = [&](float hx, float hy, float sc, int mode) {
+            float gx = gazeX * sc, gy = gazeY * sc;
+            if (mode == 3) {
+                drawBeagleSprite(g, atlas, SP_EYE_CLOSED, hx - 42*sc, hy + 24*sc, sc);
+                drawBeagleSprite(g, atlas, SP_EYE_CLOSED, hx + 26*sc, hy + 28*sc, sc, 0, true);
+                drawBeagleSprite(g, atlas, SP_NOSE, hx - 12*sc, hy + 46*sc, sc);
+                float bubSc = sc * (0.88f + 0.18f * std::sin(t * 2.2f));
+                drawBeagleSprite(g, atlas, SP_BUBBLE, hx + 5*sc, hy + 54*sc, bubSc);
+                return;
+            }
+            if (blinking && mode != 2 && mode != 4) {
+                drawBeagleSprite(g, atlas, SP_EYE_CLOSED, hx - 40*sc, hy + 22*sc, sc);
+                drawBeagleSprite(g, atlas, SP_EYE_CLOSED, hx + 26*sc, hy + 26*sc, sc, 0, true);
+                drawBeagleSprite(g, atlas, SP_NOSE, hx - 10*sc, hy + 44*sc, sc);
+                return;
+            }
+            if (mode == 2) {
+                drawBeagleSprite(g, atlas, SP_ANGRY_FRAME_R, hx - 38*sc, hy + 18*sc, sc);
+                drawBeagleSprite(g, atlas, SP_ANGRY_FRAME_L, hx + 28*sc, hy + 24*sc, sc);
+                drawBeagleSprite(g, atlas, SP_PUPIL_L, hx - 38*sc + gx*0.6f, hy + 22*sc + gy*0.6f, sc);
+                drawBeagleSprite(g, atlas, SP_PUPIL_R, hx + 28*sc + gx*0.6f, hy + 28*sc + gy*0.6f, sc);
+                drawBeagleSprite(g, atlas, SP_NOSE, hx - 10*sc, hy + 46*sc, sc);
+                float pulse = 1.0f + std::sin(t * 14.0f) * 0.10f;
+                drawBeagleSprite(g, atlas, SP_ANGER_MARK, hx + 36*sc, hy - 44*sc, sc * pulse);
+                drawBeagleSprite(g, atlas, SP_SWEAT, hx - 44*sc, hy - 36*sc, sc);
+                return;
+            }
+            drawBeagleSprite(g, atlas, SP_EYE_FRAME_L, hx - 38*sc, hy + 16*sc, sc);
+            drawBeagleSprite(g, atlas, SP_EYE_FRAME_R, hx + 28*sc, hy + 22*sc, sc);
+            drawBeagleSprite(g, atlas, SP_PUPIL_L, hx - 38*sc + gx, hy + 18*sc + gy, sc);
+            drawBeagleSprite(g, atlas, SP_PUPIL_R, hx + 28*sc + gx, hy + 24*sc + gy, sc);
+            if (mode == 1) {
+                drawBeagleSprite(g, atlas, SP_EYE_HI, hx - 36*sc + gx*0.5f, hy + 12*sc + gy*0.5f, sc);
+                drawBeagleSprite(g, atlas, SP_EYE_HI, hx + 30*sc + gx*0.5f, hy + 18*sc + gy*0.5f, sc);
+                drawBeagleSprite(g, atlas, SP_BLUSH, hx - 60*sc, hy + 44*sc, sc);
+                drawBeagleSprite(g, atlas, SP_BLUSH, hx + 42*sc, hy + 48*sc, sc);
+            } else if (mode == 4) {
+                drawBeagleSprite(g, atlas, SP_LIFT_EYE_HI, hx - 36*sc + gx*0.4f, hy + 16*sc + gy*0.4f, sc);
+                drawBeagleSprite(g, atlas, SP_LIFT_EYE_HI, hx + 30*sc + gx*0.4f, hy + 22*sc + gy*0.4f, sc);
+                drawBeagleSprite(g, atlas, SP_SWEAT, hx - 44*sc, hy - 36*sc, sc);
+            }
+            drawBeagleSprite(g, atlas, SP_NOSE, hx - 10*sc, hy + 44*sc, sc);
+        };
+
+        if (scruffS > 0.35f) {
+            drawV2DeskOnly(1.0f - smoothstep(0.0f, 0.48f, scruffS), scruffS * 28.0f);
+            float swing = std::clamp(physics.scruffSwing.value, -0.5f, 0.5f);
+            float hx = seatX - 10.0f + swing * 18.0f;
+            float hy = 132.0f + std::sin(t * 3.0f) * 3.5f;
+            float wag = std::sin(t * 11.0f) * 0.24f;
+            float legSwing = std::sin(t * 7.5f) * 0.18f + swing * 0.45f;
+            GraphicsState st = g.Save();
+            g.TranslateTransform(hx, hy);
+            g.RotateTransform(swing * 0.25f * 57.29578f);
+            drawBeagleSprite(g, atlas, SP_LIFT_TAIL, 124*S, -34*S, S, wag);
+            drawBeagleSprite(g, atlas, SP_LIFT_HIND_PAW, 82*S, 86*S, S, -legSwing * 0.8f);
+            drawBeagleSprite(g, atlas, SP_LIFT_BODY, 34*S, 26*S, S);
+            drawBeagleSprite(g, atlas, SP_LIFT_FRONT_PAW, -52*S, 92*S, S, legSwing);
+            drawBeagleSprite(g, atlas, SP_LIFT_FRONT_PAW, 18*S, 100*S, S, -legSwing * 0.9f);
+            drawBeagleSprite(g, atlas, SP_EAR_L, -74*S, 12*S, S, -swing * 0.35f + std::sin(t * 5.0f) * 0.05f);
+            drawBeagleSprite(g, atlas, SP_HEAD, 0, 0, S);
+            drawFace(0, 0, S, 4);
+            drawBeagleSprite(g, atlas, SP_EAR_R, 86*S, 22*S, S, -swing * 0.35f - std::sin(t * 5.0f) * 0.05f);
+            g.Restore(st);
+            if (physics.musicIntensity > 0.01f) drawMusicHeadphones(g, { hx, hy }, physics, eyeTheme, skin);
+            return;
+        }
+        if (sleepS > 0.45f) {
+            drawV2DeskOnly(1.0f - smoothstep(0.45f, 0.80f, sleepS), smoothstep(0.45f, 0.80f, sleepS) * 34.0f);
+            float slAlpha = smoothstep(0.45f, 0.65f, sleepS);
+            float hx = seatX - 24.0f, hy = 178.0f + breath * 0.7f;
+            drawWithRectLayerAlpha(g, 0.0f, 0.0f, 360.0f, 320.0f, slAlpha, [&](Graphics& lg) {
+                drawBeagleSprite(lg, atlas, SP_SLEEP_TAIL, hx + 158*S, hy + 44*S, S, std::sin(t * 1.8f) * 0.08f);
+                drawBeagleSprite(lg, atlas, SP_SLEEP_HIND_PAW, hx + 104*S, hy + 68*S, S);
+                drawBeagleSprite(lg, atlas, SP_SLEEP_BODY, hx + 54*S, hy + 22*S + breath * 0.35f, S);
+                drawBeagleSprite(lg, atlas, SP_SLEEP_EAR_L, hx - 68*S, hy + 12*S, S);
+                drawBeagleSprite(lg, atlas, SP_SLEEP_FRONT_PAW, hx - 74*S, hy + 72*S, S);
+                drawBeagleSprite(lg, atlas, SP_HEAD, hx, hy, S);
+                drawBeagleSprite(lg, atlas, SP_EYE_CLOSED, hx - 42*S, hy + 24*S, S);
+                drawBeagleSprite(lg, atlas, SP_EYE_CLOSED, hx + 26*S, hy + 28*S, S, 0, true);
+                drawBeagleSprite(lg, atlas, SP_NOSE, hx - 12*S, hy + 46*S, S);
+                drawBeagleSprite(lg, atlas, SP_BUBBLE, hx + 5*S, hy + 54*S, S * (0.88f + 0.18f * std::sin(t * 2.2f)));
+                drawBeagleSprite(lg, atlas, SP_SLEEP_EAR_R, hx + 70*S, hy + 18*S, S);
+                drawBeagleSprite(lg, atlas, SP_SLEEP_FRONT_PAW, hx + 18*S, hy + 74*S, S);
+            });
+            if (physics.musicIntensity > 0.01f) drawMusicHeadphones(g, { hx, hy }, physics, eyeTheme, skin);
+            return;
+        }
+
+        auto drawBeagleV2Paw = [&](Pt sh, Pt tip) {
+            float dx = tip.x - sh.x, dy = tip.y - sh.y;
+            float dist = std::max(60.0f, std::hypot(dx, dy));
+            float lenScale = std::clamp(dist / (104.0f * SB), 0.76f, 1.62f);
+            float angle = std::atan2(dy, dx);
+            GraphicsState ps = g.Save();
+            g.TranslateTransform(tip.x, tip.y);
+            g.RotateTransform((angle - 3.14159265f) * 57.29578f);
+            g.ScaleTransform(lenScale, 1.0f);
+            drawBeagleSprite(g, atlas, SP_PAW, 52.0f * SB, 0.0f, SB);
+            g.Restore(ps);
+        };
+
+        float angerShakeX = (anger > 0.08f) ? std::sin(t * 42.0f) * 3.2f * anger : 0.0f;
+        float headBobY = std::fabs(leftPose - rightPose) * 2.5f + breath * 1.4f + impY * 5.2f + anger * 5.0f;
+        float headTiltRad = -rightPose * 0.010f + leftPose * 0.012f + physics.headTilt.value * 0.10f + impT * 0.014f;
+        float earBob = std::sin(t * 2.3f - 0.5f) * 0.03f + (leftPose - rightPose) * 0.04f;
+        int faceMode = anger > 0.32f ? 2 : (happy > 0.22f ? 1 : 0);
+
+        GraphicsState v2st = g.Save();
+        g.TranslateTransform(deskTx, deskTy);
+        g.ScaleTransform(deskV2Scale, deskV2Scale);
+
+        if (isTablet) {
+            drawDouniComicTablet(g, physics, kbDeckColor, kbBevelColor, kbKeyColor, kbAccentColor,
+                                 glowBaseColor, eyePrimary(eyeTheme), ink, catLW, mouseBlend < 0.18f);
+        } else {
+            drawDouniComicMouse(g, mouseCenter, physics.mousePressLeft.value, physics.mousePressRight.value,
+                                mouseBodyColor, kbBevelColor, mouseWheelColor, glowBaseColor, ink, catLW, physics.mousePressMiddle.value);
+        }
+
+        {
+            GraphicsState hs = g.Save();
+            g.TranslateTransform(582.0f + angerShakeX, 248.0f + headBobY);
+            g.RotateTransform(headTiltRad * 57.29578f);
+            drawBeagleSprite(g, atlas, SP_BODY, 14*SB, 92*SB, SB);
+            drawBeagleSprite(g, atlas, SP_EAR_L, -74*SB, 12*SB, SB, earBob);
+            drawBeagleSprite(g, atlas, SP_HEAD, 0, 0, SB);
+            drawFace(0, 0, SB, faceMode);
+            drawBeagleSprite(g, atlas, SP_EAR_R, 86*SB, 22*SB, SB, -earBob);
+            g.Restore(hs);
+        }
+
+        drawDouniV2Keyboard(g, physics, kbDeckColor, kbBevelColor, kbKeyColor, kbAccentColor, glowBaseColor,
+                            settings.keyboardMarquee, ink, kbLW, impY, impT);
+
+        Pt lTarget = { physics.douniLeftKeyTarget.point().x + impT * 10.0f, physics.douniLeftKeyTarget.point().y + impY * 8.5f };
+        Pt leftToolTarget = isTablet
+            ? Pt{ v2Nib.x + 14.0f, v2Nib.y - 12.0f + tabletPress * 5.0f }
+            : Pt{ mouseCenter.x + 10.0f, mouseCenter.y - 2.0f + mousePress * 8.0f };
+        Pt lIdleSh = { 468.0f, 344.0f }, lIdleTip = { 242.0f, 346.0f };
+        Pt lSlamSh = { 468.0f, 350.0f }, lSlamTip = lTarget;
+        Pt lHighSh = { 468.0f, 302.0f }, lHighTip = { 258.0f, 248.0f };
+        Pt lMouseSh = { 468.0f, 326.0f }, lMouseTip = leftToolTarget;
+        float lTypT = std::clamp(std::fabs(leftPose), 0.0f, 1.05f);
+        Pt lTypSh = leftPose >= 0.0f ? lerpPt(lIdleSh, lHighSh, lTypT) : lerpPt(lIdleSh, lSlamSh, lTypT);
+        Pt lTypTip = leftPose >= 0.0f ? lerpPt(lIdleTip, lHighTip, lTypT) : lerpPt(lIdleTip, lSlamTip, lTypT);
+        Pt lSh = mouseBlend > 0.01f ? lerpPt(lTypSh, lMouseSh, mouseBlend) : lTypSh;
+        Pt lTip = mouseBlend > 0.01f ? lerpPt(lTypTip, lMouseTip, mouseBlend) : lTypTip;
+        drawBeagleV2Paw(lSh, lTip);
+
+        if (isTablet && mouseBlend > 0.18f) {
+            float penAlpha = smoothstep(0.18f, 0.42f, mouseBlend);
+            drawWithRectLayerAlpha(g, -40.0f, -40.0f, 440.0f, 440.0f, penAlpha, [&](Graphics& pg) {
+                GraphicsState ps = pg.Save();
+                pg.TranslateTransform(v2Nib.x, v2Nib.y + tabletPress * 4.0f);
+                pg.RotateTransform((-2.14f + physics.tabletPenTilt.value) * 57.29578f);
+                drawDouniComicStylus(pg, 124.0f, glowBaseColor, eyePrimary(eyeTheme), ink, catLW, tabletPress);
+                pg.Restore(ps);
+            });
+        }
+
+        Pt rTarget = { physics.douniRightKeyTarget.point().x + impT * 10.0f, physics.douniRightKeyTarget.point().y + impY * 8.5f };
+        Pt rIdleSh = { 616.0f, 374.0f }, rIdleTip = { 410.0f, 368.0f };
+        Pt rSlamSh = { 604.0f, 372.0f }, rSlamTip = rTarget;
+        Pt rHighSh = { 622.0f, 356.0f }, rHighTip = { 422.0f, 294.0f };
+        float rTypT = std::clamp(std::fabs(rightPose), 0.0f, 1.05f);
+        Pt rSh = rightPose >= 0.0f ? lerpPt(rIdleSh, rHighSh, rTypT) : lerpPt(rIdleSh, rSlamSh, rTypT);
+        Pt rTip = rightPose >= 0.0f ? lerpPt(rIdleTip, rHighTip, rTypT) : lerpPt(rIdleTip, rSlamTip, rTypT);
+        drawBeagleV2Paw(rSh, rTip);
+
+        g.Restore(v2st);
+        if (physics.musicIntensity > 0.01f) {
+            drawMusicHeadphones(g, { deskTx + (582.0f + angerShakeX) * deskV2Scale, deskTy + (248.0f + headBobY) * deskV2Scale }, physics, eyeTheme, skin);
+        }
+    }
+
     static void drawDouniScene(
         Gdiplus::Graphics& g,
         const CatPhysics& physics,
@@ -5740,8 +6494,8 @@ private:
         }
     }
 
-    // MARK: - Universal Front-Facing Long-Cat Scruff-Lifted Drag Pose (ALL Non-Douni Skins!)
-
+    // Port of the macOS drawNativeScruffDragCat (Sources/CatRenderer.swift): pendulum-driven hang from the pinched
+    // nape, back rising smoothly into the pinched skin, ears in front of the nape, head repainted over the ear bases.
     static void drawNativeScruffDragCat(
         Gdiplus::Graphics& g,
         const CatPhysics& physics,
@@ -6024,20 +6778,51 @@ private:
                     Color cols[2] = { Color(255, 227, 201, 159), Color(255, 200, 167, 122) };
                     REAL locs[2] = { 0.0f, 1.0f };
                     fillClampedLinearGradient(lg, &fillP, nullptr, PointF(limb.root.x, limb.root.y), PointF(limb.tip.x, limb.tip.y), cols, locs, 2);
+                } else if (isTabby(skin)) {
+                    Pt ctrl = { (limb.root.x + limb.tip.x) * 0.5f + limb.bendX * 0.5f, (limb.root.y + limb.tip.y) * 0.5f };
+                    RectF pawRect(limb.tip.x - geo.r1 * 0.9f, limb.tip.y - geo.r1 * 0.45f, geo.r1 * 1.8f, geo.r1 * 1.35f);
+                    GraphicsState ts = lg.Save();
+                    lg.SetClip(&fillP, CombineModeIntersect);
+                    tabby::drawLimb(lg, fillP, pawRect, limb.root, ctrl, limb.tip, limb.startW, limb.endW);
+                    lg.Restore(ts);
                 } else if (skin.colorpoint()) {
                     const SkinColor& midC = pal.pointsMid.set ? pal.pointsMid : pal.legs;
-                    Color cols[4] = { col(pal.body), col(pal.body), col(midC), col(pal.paws) };
-                    REAL locs[4] = { 0.0f, 0.20f, 0.54f, 0.88f };
-                    fillClampedLinearGradient(lg, &fillP, nullptr, PointF(limb.root.x, limb.root.y), PointF(limb.tip.x, limb.tip.y), cols, locs, 4);
+                    const SkinColor& pointC = pal.points.set ? pal.points : pal.paws;
+                    if (pointC.sameAs(pal.paws)) {
+                        Color cols[4] = { withAlpha(pal.body, 0), col(pal.body), col(midC), col(pal.paws) };
+                        REAL locs[4] = { 0.0f, 0.16f, 0.48f, 0.78f };
+                        fillClampedLinearGradient(lg, &fillP, nullptr, PointF(limb.root.x, limb.root.y), PointF(limb.tip.x, limb.tip.y), cols, locs, 4);
+                    } else {
+                        Color cols[5] = { withAlpha(pal.body, 0), col(pal.body), col(midC), col(pointC), col(pal.paws) };
+                        REAL locs[5] = { 0.0f, 0.16f, 0.46f, 0.72f, 0.88f };
+                        fillClampedLinearGradient(lg, &fillP, nullptr, PointF(limb.root.x, limb.root.y), PointF(limb.tip.x, limb.tip.y), cols, locs, 5);
+                    }
                 } else if (auto pgIt = skin.partGradients.find(limbKey); pgIt != skin.partGradients.end()) {
                     fillPartGradient(lg, &fillP, PointF(limb.root.x, limb.root.y), PointF(limb.tip.x, limb.tip.y), pgIt->second);
-                } else if (!limb.isBehindBody && !pal.legs.sameAs(pal.body)) {
-                    Color cols[4] = { col(pal.body), col(pal.body), col(pal.legs), col(pal.paws) };
-                    REAL locs[4] = { 0.0f, 0.14f, 0.42f, 0.82f };
-                    fillClampedLinearGradient(lg, &fillP, nullptr, PointF(limb.root.x, limb.root.y), PointF(limb.tip.x, limb.tip.y), cols, locs, 4);
+                } else if (!limb.isBehindBody) {
+                    const SkinColor& legC = pal.legs;
+                    const SkinColor& pawC = pal.paws;
+                    if (pal.belly.set && !pal.belly.sameAs(legC)) {
+                        if (!pawC.sameAs(legC)) {
+                            Color cols[4] = { col(pal.belly), col(legC), col(legC), col(pawC) };
+                            REAL locs[4] = { 0.0f, 0.30f, 0.68f, 0.84f };
+                            fillClampedLinearGradient(lg, &fillP, nullptr, PointF(limb.root.x, limb.root.y), PointF(limb.tip.x, limb.tip.y), cols, locs, 4);
+                        } else {
+                            Color cols[2] = { col(pal.belly), col(legC) };
+                            REAL locs[2] = { 0.0f, 0.30f };
+                            fillClampedLinearGradient(lg, &fillP, nullptr, PointF(limb.root.x, limb.root.y), PointF(limb.tip.x, limb.tip.y), cols, locs, 2);
+                        }
+                    } else if (!pawC.sameAs(legC)) {
+                        Color cols[3] = { col(legC), col(legC), col(pawC) };
+                        REAL locs[3] = { 0.0f, 0.68f, 0.84f };
+                        fillClampedLinearGradient(lg, &fillP, nullptr, PointF(limb.root.x, limb.root.y), PointF(limb.tip.x, limb.tip.y), cols, locs, 3);
+                    } else {
+                        SolidBrush legBrush(col(legC));
+                        lg.FillPath(&legBrush, &fillP);
+                    }
                 } else {
-                    const SkinColor& legC = limb.isBehindBody && pal.hindLeg.set ? pal.hindLeg : pal.legs;
-                    const SkinColor& pawC = limb.isBehindBody && pal.hindPaw.set ? pal.hindPaw : pal.paws;
+                    const SkinColor& legC = pal.hindLeg.set ? pal.hindLeg : pal.legs;
+                    const SkinColor& pawC = pal.hindPaw.set ? pal.hindPaw : pal.paws;
                     Color cols[2] = { col(legC), col(pawC) };
                     REAL locs[2] = { 0.22f, 0.75f };
                     fillClampedLinearGradient(lg, &fillP, nullptr, PointF(limb.root.x, limb.root.y), PointF(limb.tip.x, limb.tip.y), cols, locs, 2);
@@ -6121,6 +6906,11 @@ private:
                 if (isTabby(skin) && !isDazed) {
                     tabby::drawTail(lg, tailPen, PointF(tailRoot.x, tailRoot.y), PointF(tailC1.x, tailC1.y), PointF(tailC2.x, tailC2.y), PointF(tailTip.x, tailTip.y));
                 } else {
+                    if (!isBlackRim && !pal.outline.set) {
+                        Pen subtlePen(Color(41, 0, 0, 0), tailW + 2.0f);
+                        setRound(subtlePen);
+                        lg.DrawPath(&subtlePen, &tailCurvePath);
+                    }
                     if (!isDazed && skin.partGradients.count("tail")) {
                         GraphicsPath tailFill;
                         tailFill.AddBezier(PointF(tailRoot.x, tailRoot.y), PointF(tailC1.x, tailC1.y), PointF(tailC2.x, tailC2.y), PointF(tailTip.x, tailTip.y));
@@ -6137,25 +6927,22 @@ private:
                                 u*u*u*tailRoot.y + 3*u*u*t*tailC1.y + 3*u*t*t*tailC2.y + t*t*t*tailTip.y
                             );
                         };
-                        Pen ringPen(withAlpha(pal.stripes, 107), tailW * 0.88f);
+                        Pen ringPen(colMul(pal.stripes, 0.42f), tailW * 0.88f);
                         ringPen.SetStartCap(LineCapFlat); ringPen.SetEndCap(LineCapFlat);
                         for (float t0 : { 0.24f, 0.50f, 0.74f }) {
                             lg.DrawLine(&ringPen, evalTailPt(t0), evalTailPt(t0 + 0.09f));
                         }
                     }
                     if (!isDazed && pal.tailTip.set) {
-                        Pen tipPen(col(pal.tailTip), tailW * 0.92f);
+                        // Tail tip = last 22% of the tail curve (de Casteljau split at t = 0.78, same as drawTail's
+                        // idle tip). A straight chord only touches the curve at the tip and cuts across the bend, so the
+                        // colour ended up outside the silhouette on the convex side and left fur showing on the inside.
+                        const float tipT = 0.78f;
+                        Pt ta = lerpPt(tailRoot, tailC1, tipT), tb = lerpPt(tailC1, tailC2, tipT), tq = lerpPt(tailC2, tailTip, tipT);
+                        Pt td = lerpPt(ta, tb, tipT), te = lerpPt(tb, tq, tipT), ts = lerpPt(td, te, tipT);
+                        Pen tipPen(col(pal.tailTip), tailW);
                         setRound(tipPen);
-                        Pt tStart = lerpPt(tailC2, tailTip, 0.35f);
-                        lg.DrawLine(&tipPen, tStart.x, tStart.y, tailTip.x, tailTip.y);
-                    }
-                    if (!isBlackRim && !pal.outline.set) {
-                        GraphicsPath strokedTail;
-                        strokedTail.AddBezier(PointF(tailRoot.x, tailRoot.y), PointF(tailC1.x, tailC1.y), PointF(tailC2.x, tailC2.y), PointF(tailTip.x, tailTip.y));
-                        strokedTail.Widen(&tailPen);
-                        Pen subtlePen(Color(41, 0, 0, 0), 1.0f);
-                        setRound(subtlePen);
-                        lg.DrawPath(&subtlePen, &strokedTail);
+                        lg.DrawBezier(&tipPen, PointF(ts.x, ts.y), PointF(te.x, te.y), PointF(tq.x, tq.y), PointF(tailTip.x, tailTip.y));
                     }
                 }
             }
@@ -6225,7 +7012,9 @@ private:
                     auto tabbyBack = [&](float x, float y) -> PointF {
                         return dragBodyMap(SkinPoint{ x, y - 44.0f });
                     };
-                    tabby::drawBody(lg, longCatPath, tabbyFace, tabbyBack, physics);
+                    GraphicsPath tabbyJawBody;
+                    jawSide(tabbyJawBody, false, skin, headCenter, physics);
+                    tabby::drawBody(lg, longCatPath, tabbyJawBody, tabbyFace, tabbyBack, physics);
                 } else {
                     SolidBrush hb(col(pal.body));
                     lg.FillPath(&hb, &longCatPath);
@@ -6247,7 +7036,7 @@ private:
                         lg.Restore(bsState);
                     }
 
-                    if (pal.headBody.set) {
+                    if (pal.headBody.set && !pal.headBody.sameAs(pal.body)) {
                         GraphicsState hsState = lg.Save();
                         GraphicsPath headSide;
                         jawSide(headSide, true, skin, headCenter, physics);
@@ -6310,11 +7099,21 @@ private:
                             lg.SetClip(&bodySide, CombineModeIntersect);
                             drawMark(lg, mark, dragBodyMap);
                             lg.Restore(msState);
-                        } else if (mark.space == SkinSpace::Skull) {
-                            drawMark(lg, mark, skullMap);
-                        } else if (mark.space == SkinSpace::Head) {
-                            if (isMilkMark(mark)) drawMark(lg, mark, headWhiteMap);
-                            else drawMark(lg, mark, headMap);
+                        } else if (mark.space == SkinSpace::Skull || mark.space == SkinSpace::Head) {
+                            auto mapFn = [&](SkinPoint p) -> PointF {
+                                if (mark.space == SkinSpace::Skull) return skullMap(p);
+                                return (skin.builtIn && isMilkMark(mark)) ? headWhiteMap(p) : headMap(p);
+                            };
+                            if (shouldSkipJawHeadClip(mark)) {
+                                drawMark(lg, mark, mapFn);
+                            } else {
+                                GraphicsState hsState = lg.Save();
+                                GraphicsPath headSide;
+                                jawSide(headSide, true, skin, headCenter, physics);
+                                lg.SetClip(&headSide, CombineModeIntersect);
+                                drawMark(lg, mark, mapFn);
+                                lg.Restore(hsState);
+                            }
                         }
                     }
                     lg.Restore(bcs);
@@ -6329,7 +7128,7 @@ private:
                 // Subtle soft chin shadow curve
                 Pen chinPen(isBlackRim
                     ? Color(41, 255, 255, 255)
-                    : (pal.outline.set ? withAlpha(pal.outline, 115) : Color(41, 46, 38, 31)),
+                    : (pal.outline.set ? colMul(pal.outline, 0.45f) : Color(41, 46, 38, 31)),
                     isBlackRim ? 1.05f : 1.0f);
                 setRound(chinPen);
                 GraphicsPath chinArc;
@@ -6415,6 +7214,9 @@ private:
                 Pt dragNeck = { headCenter.x + hipLagX * 0.08f, headCenter.y + 36.0f * hs };
                 drawDecorations(lg, rumpCenterX, torsoBottomY, headCenter, physics, skin, &dragNeck, &tailTip,
                                 anchorBit(SkinAnchorPoint::HeadTop) | anchorBit(SkinAnchorPoint::Face) | anchorBit(SkinAnchorPoint::Neck));
+            }
+            if (physics.musicIntensity > 0.01f) {
+                drawMusicHeadphones(lg, headCenter, physics, eyeTheme, skin);
             }
             lg.Restore(pState);
         });

@@ -29,7 +29,7 @@ enum class SkinSpace : int { Head = 0, Skull, Body, Tail, LeftEar, RightEar, Lef
 enum class SkinBuild : int { Standard = 0, Sleek };
 enum class SkinHeadSurface : int { Dome = 0, Plane };
 enum class SkinAnchorPoint : int { HeadTop = 0, Face, Neck, TailTip };
-enum class SkinRenderStyle : int { Standard = 0, Douni, Dazed };
+enum class SkinRenderStyle : int { Standard = 0, Douni, Dazed, Beagle };
 enum class SkinTypingStyle : int { Standard = 0, Douni };
 
 struct SkinPoint { float x = 0, y = 0; };
@@ -44,6 +44,8 @@ struct SkinRegion {
     std::vector<SkinPoint> flat;
 };
 
+enum class SkinBrush { Round, Soft, Airbrush, Smudge };
+
 struct SkinMark {
     SkinSpace space = SkinSpace::Body;
     bool stroke = false;
@@ -51,6 +53,8 @@ struct SkinMark {
     SkinColor color;
     std::vector<SkinPoint> points;
     bool clipToBib = false;
+    SkinBrush brush = SkinBrush::Round;
+    float softness = 0.65f;
 };
 
 struct SkinShape {
@@ -108,9 +112,33 @@ struct SkinSpec {
         return false;
     }
 
-    // Static limits of formatVersion 1.
+    // Static limits. formatVersion 2 = same fields as 1, written by the workshop when the skin needs an app newer
+    // than 1.5.2 (the last release that only knew formatVersion 1); `minAppVersion` says which one.
     static constexpr size_t MaxFileBytes = 2 * 1024 * 1024;
-    static constexpr int FormatVersion = 1;
+    static constexpr int FormatVersion = 2;
+    static constexpr size_t MaxMarks = 1024; // 256 up to 1.5.2
+    // The running app's version ("1.5.3"), set once at startup; empty (tests) skips the minAppVersion check.
+    static inline std::string appVersion;
+    // -1 / 0 / 1 for dotted numeric versions ("1.4.10" > "1.4.9"); missing parts count as 0.
+    static int compareVersions(const std::string& a, const std::string& b) {
+        size_t i = 0, j = 0;
+        while (i < a.size() || j < b.size()) {
+            long x = 0, y = 0;
+            while (i < a.size() && a[i] != '.') x = x * 10 + (a[i++] - '0');
+            while (j < b.size() && b[j] != '.') y = y * 10 + (b[j++] - '0');
+            if (x != y) return x < y ? -1 : 1;
+            ++i; ++j;
+        }
+        return 0;
+    }
+    static bool isVersionString(const std::string& v) {
+        if (v.empty() || v.size() > 16 || v.front() == '.' || v.back() == '.') return false;
+        for (size_t k = 0; k < v.size(); ++k) {
+            if (v[k] == '.') { if (v[k - 1] == '.') return false; }
+            else if (v[k] < '0' || v[k] > '9') return false;
+        }
+        return true;
+    }
 
     static bool parse(const std::string& bytes, SkinSpec& out, std::string& error);
     static bool loadFile(const std::string& path, SkinSpec& out, std::string& error);
@@ -443,6 +471,13 @@ inline bool SkinSpec::parse(const std::string& bytes, SkinSpec& out, std::string
     if (ver->type != Value::JNumber || ver->n != std::floor(ver->n)) { error = "formatVersion 必须是整数"; return false; }
     if (ver->n > FormatVersion) { error = "这个皮肤使用了更新的格式（formatVersion " + std::to_string((long long)ver->n) + "），请先升级 KuroCat"; return false; }
     if (ver->n < 1) { error = "formatVersion 无效"; return false; }
+    if (const Value* minApp = root.get("minAppVersion")) {
+        if (minApp->type != Value::JString || !isVersionString(minApp->s)) { error = "minAppVersion 必须是形如 \"1.5.3\" 的版本号"; return false; }
+        if (!appVersion.empty() && compareVersions(minApp->s, appVersion) > 0) {
+            error = "这个皮肤需要 KuroCat " + minApp->s + " 或更新版本（当前 " + appVersion + "），请先升级 KuroCat";
+            return false;
+        }
+    }
 
     SkinSpec s;
     const Value* name = root.get("name");
@@ -541,6 +576,7 @@ inline bool SkinSpec::parse(const std::string& bytes, SkinSpec& out, std::string
     if (const Value* rs = root.get("renderStyle"); rs && rs->type == Value::JString) {
         if (rs->s == "douni") s.renderStyle = SkinRenderStyle::Douni;
         else if (rs->s == "dazed") s.renderStyle = SkinRenderStyle::Dazed;
+        else if (rs->s == "beagle") s.renderStyle = SkinRenderStyle::Beagle;
     }
     if (const Value* ts = root.get("typingStyle"); ts && ts->type == Value::JString) {
         if (ts->s == "douni") s.typingStyle = SkinTypingStyle::Douni;
@@ -593,7 +629,7 @@ inline bool SkinSpec::parse(const std::string& bytes, SkinSpec& out, std::string
     // Marks (polygons / strokes, same model as the built-in CoatMark artwork)
     if (const Value* marks = root.get("marks")) {
         if (marks->type != Value::JArray) { error = "marks 必须是数组"; return false; }
-        if (marks->items.size() > 256) { error = "marks 最多 256 条"; return false; }
+        if (marks->items.size() > MaxMarks) { error = "marks 最多 " + std::to_string(MaxMarks) + " 条"; return false; }
         for (size_t i = 0; i < marks->items.size(); ++i) {
             const Value& m = marks->items[i];
             std::string f = "marks[" + std::to_string(i) + "]";
@@ -627,6 +663,13 @@ inline bool SkinSpec::parse(const std::string& bytes, SkinSpec& out, std::string
                 mark.points.push_back({clampf(pt.items[0].n, -400, 400), clampf(pt.items[1].n, -400, 400)});
             }
             if (const Value* cb = m.get("clipToBib")) mark.clipToBib = (cb->type == Value::JBool && cb->b);
+            if (const Value* br = m.get("brush"); br && br->type == Value::JString) {
+                if (br->s == "soft") mark.brush = SkinBrush::Soft;
+                else if (br->s == "airbrush") mark.brush = SkinBrush::Airbrush;
+                else if (br->s == "smudge") mark.brush = SkinBrush::Smudge;
+                else mark.brush = SkinBrush::Round;
+            }
+            if (!number(c, m.get("softness"), f + ".softness", 0, 1, mark.softness)) { error = c.error; return false; }
             s.marks.push_back(std::move(mark));
         }
     }
