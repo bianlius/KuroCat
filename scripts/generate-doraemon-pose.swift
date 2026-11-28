@@ -87,7 +87,12 @@ func drawBody(_ ctx: CGContext) {
         pocket.addCurve(to: p(48.8, 98.1), control1: p(55.4, 111.5), control2: p(49.5, 106.5))
     }
 
-    paint(ctx, color: red, path: collarOutline)
+    drawCollar(ctx)
+    drawSole(ctx, isLeft: true)
+}
+
+func drawCollar(_ ctx: CGContext) {
+    drawCollarBand(ctx)
     oval(ctx, bellBounds, color: bell, line: 1.15)
     ctx.setStrokeColor(CGColor(srgbRed: 0.63, green: 0.43, blue: 0.08, alpha: 1))
     ctx.setLineWidth(0.85)
@@ -101,7 +106,10 @@ func drawBody(_ ctx: CGContext) {
     }
     ctx.setFillColor(ink)
     ctx.fillEllipse(in: CGRect(x: 62.9, y: 87.8, width: 2.2, height: 1.9))
-    drawSole(ctx, isLeft: true)
+}
+
+func drawCollarBand(_ ctx: CGContext) {
+    paint(ctx, color: red, path: collarOutline)
 }
 
 func drawShoulderMask(_ ctx: CGContext) {
@@ -191,6 +199,7 @@ func export(_ name: String, bounds: CGRect = frame, monochrome: Bool = false, _ 
 try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
 export("head", drawHead)
 export("body", drawBody)
+export("collar", drawCollarBand)
 export("hand", drawHand)
 export("foot-right") { drawSole($0, isLeft: false) }
 export("shoulder-mask", bounds: shoulderMaskBounds, monochrome: true, drawShoulderMask)

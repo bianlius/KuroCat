@@ -419,7 +419,7 @@ private:
         const float seatedAngle = std::sin(physics.tailPhase) * 0.045f * (1 - active) + delta * active;
         const float angle = seatedAngle * (1 - lift) + (1.75f - physics.scruffTailSwing.value * 0.22f) * lift;
         const float reach = std::clamp(std::hypot(target.x - root.x, target.y - root.y) / 123, 0.5f, 1.15f);
-        const float scale = (1 + (reach - 1) * active) * (1 - lift) + 0.74f * lift;
+        const float scale = (1 + (reach - 1) * active) * (1 - lift) + kurorig::PikachuTailLiftScale * lift;
         PointF offset{0, 4};
         inverse.TransformVectors(&offset);
 

@@ -9,7 +9,9 @@ from pathlib import Path
 import sys
 root, out = map(Path, sys.argv[1:])
 (out/'CatPhysics.swift').write_text((root/'Sources/CatPhysics.swift').read_text().replace('private(set) ', ''))
-(out/'CatRenderer.swift').write_text((root/'Sources/CatRenderer.swift').read_text().replace('CatSettings.shared', 'RenderSettings.shared'))
+renderer = (root/'Sources/CatRenderer.swift').read_text().replace('CatSettings.shared', 'RenderSettings.shared')
+renderer = renderer.replace('private static func drawMouse(', 'static func drawMouse(')
+(out/'CatRenderer.swift').write_text(renderer)
 PY
 bundle="$CHECK_DIR/KuroCat.app/Contents"
 mkdir -p "$bundle/MacOS" "$bundle/Resources"

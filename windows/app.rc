@@ -8,6 +8,7 @@
 
 IDR_DORAEMON_HEAD          RCDATA "../Resources/Doraemon/head.png"
 IDR_DORAEMON_BODY          RCDATA "../Resources/Doraemon/body.png"
+IDR_DORAEMON_COLLAR        RCDATA "../Resources/Doraemon/collar.png"
 IDR_DORAEMON_HAND          RCDATA "../Resources/Doraemon/hand.png"
 IDR_DORAEMON_RIGHT_FOOT    RCDATA "../Resources/Doraemon/foot-right.png"
 IDR_DORAEMON_SHOULDER_MASK RCDATA "../Resources/Doraemon/shoulder-mask.png"

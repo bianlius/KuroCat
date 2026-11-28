@@ -27,11 +27,11 @@
     "keyboardGrip": { "v": 0.52 },
     "doraemon": {
       "artGripY": 18, "canvasGripY": 39, "wristSpread": 30, "wristY": 121,
-      "keyboardGripU": 0.73, "keyboardWristY": 111
+      "keyboardGripU": 0.73, "keyboardWristY": 111, "sleeveRootOverlap": 6.5
     },
     "pikachu": {
       "artGripY": 50, "canvasGripY": 69, "wristSpread": 25, "wristY": 216,
-      "keyboardGripU": 0.54, "keyboardWristY": 200
+      "keyboardGripU": 0.54, "keyboardWristY": 200, "tailLiftScale": 1.0
     }
   }
 }

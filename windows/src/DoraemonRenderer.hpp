@@ -6,6 +6,7 @@
 #include <objidl.h>
 #include <gdiplus.h>
 #include <memory>
+#include <functional>
 
 class DoraemonRenderer {
 public:
@@ -16,6 +17,7 @@ public:
         Sprite mask;
         if (!skin->head.load(IDR_DORAEMON_HEAD) ||
             !skin->body.load(IDR_DORAEMON_BODY) ||
+            !skin->collar.load(IDR_DORAEMON_COLLAR) ||
             !skin->hand.load(IDR_DORAEMON_HAND) ||
             !skin->rightFoot.load(IDR_DORAEMON_RIGHT_FOOT) ||
             !mask.load(IDR_DORAEMON_SHOULDER_MASK) ||
@@ -58,13 +60,13 @@ public:
     }
 
     void draw(Gdiplus::Graphics& g, const CatPhysics& physics, Gdiplus::Color eyeColor,
-              const Gdiplus::GraphicsPath& keyboardDeck) const {
+              const Gdiplus::GraphicsPath& keyboardDeck,
+              const std::function<void()>& drawHeldPointer = {}) const {
         using namespace Gdiplus;
         Pose pose(physics);
         GraphicsState scene = g.Save();
-        g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
-
         GraphicsState behindKeyboard = g.Save();
+        g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
         g.SetClip(&keyboardDeck, CombineModeExclude);
         g.MultiplyTransform(&pose.body);
         const auto torso = pose.drag.torso(86);
@@ -74,12 +76,24 @@ public:
         rightFoot.draw(g);
         g.Restore(behindKeyboard);
 
+        // Keep carried peripherals above the feet, with the gripping hands in front.
+        if (drawHeldPointer) drawHeldPointer();
+        g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
         g.MultiplyTransform(&pose.body);
         const auto [left, right] = pose.wrists(physics);
-        drawSleeve(g, pose.figure, left, true);
-        drawSleeve(g, pose.figure, right, false);
+        drawSleeve(g, pose.figure, left, pose.drag.lift, true);
+        drawSleeve(g, pose.figure, right, pose.drag.lift, false);
         hand.draw(g, left.point.X - 99.0f, left.point.Y - 107.2f);
         hand.draw(g, right.point.X - 99.0f, right.point.Y - 107.2f);
+
+        // Join the foreground sleeves beneath the collar, clear of the keyboard cutout.
+        if (pose.drag.lift > 0.0f) {
+            const auto collarState = g.Save();
+            g.MultiplyTransform(&torso);
+            g.MultiplyTransform(&pose.figure);
+            collar.draw(g);
+            g.Restore(collarState);
+        }
 
         g.MultiplyTransform(&pose.figure);
         g.MultiplyTransform(&pose.head);
@@ -174,6 +188,7 @@ private:
 
     Sprite head;
     Sprite body;
+    Sprite collar;
     Sprite hand;
     Sprite rightFoot;
     Gdiplus::GraphicsPath leftShoulderMask;
@@ -232,7 +247,8 @@ private:
         path.AddBezier(start, first, second, end);
     }
 
-    void drawSleeve(Gdiplus::Graphics& g, const Gdiplus::Matrix& figure, const Wrist& wrist, bool isLeft) const {
+    void drawSleeve(Gdiplus::Graphics& g, const Gdiplus::Matrix& figure, const Wrist& wrist,
+                    float lift, bool isLeft) const {
         using namespace Gdiplus;
         const float side = isLeft ? -1.0f : 1.0f;
         const float relaxed = 1.0f - wrist.reach;
@@ -246,10 +262,21 @@ private:
         const PointF shoulderControl = shoulder + scaled({shoulderOutward, shoulderDown}, shoulderCurveLength);
         const PointF wristControl = wrist.point - scaled(delta, 0.33f);
 
+        const float tangentLength = std::hypot(shoulderOutward, shoulderDown);
+        const float rootOverlap = kurorig::DoraemonSleeveRootOverlap * lift;
+        const PointF root = shoulder - scaled({shoulderOutward, shoulderDown}, rootOverlap / tangentLength);
         GraphicsPath sleeve;
+        if (rootOverlap > 0.0f) sleeve.AddLine(root, shoulder);
         sleeve.AddBezier(shoulder, shoulderControl, wristControl, wrist.point);
         constexpr float sleeveWidth = 10.9f;
         constexpr float outlineWidth = 1.45f;
+
+        // Hanging arms need their full outline outside the seated shoulder mask.
+        // Fade it in before the blue sleeve so lifting and lowering stay continuous.
+        if (lift > 0.0f) {
+            Pen hangingEdge(ink(static_cast<BYTE>(lift * 255.0f)), sleeveWidth + outlineWidth);
+            g.DrawPath(&hangingEdge, &sleeve);
+        }
 
         // Keep the short inner edge visible just above the hand in the resting pose.
         if (relaxed > 0.0f) {
@@ -276,7 +303,15 @@ private:
         g.Restore(outline);
 
         Pen blue(Color(255, 0, 159, 222), sleeveWidth - outlineWidth);
-        g.DrawPath(&blue, &sleeve);
+        // Extend only the blue fill past the shared butt cap to cover the dark
+        // antialias fringe, keeping the outlined arm and its shoulder anchor intact.
+        const float overlap = outlineWidth * 0.5f * lift;
+        const PointF fillStart = root - scaled({shoulderOutward, shoulderDown}, overlap / tangentLength);
+        GraphicsPath blueSleeve;
+        if (overlap > 0.0f) blueSleeve.AddLine(fillStart, root);
+        if (rootOverlap > 0.0f) blueSleeve.AddLine(root, shoulder);
+        blueSleeve.AddBezier(shoulder, shoulderControl, wristControl, wrist.point);
+        g.DrawPath(&blue, &blueSleeve);
     }
 
     static void drawEyes(Gdiplus::Graphics& g, const CatPhysics& physics, Gdiplus::Color tint) {

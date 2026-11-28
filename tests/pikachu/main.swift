@@ -53,20 +53,72 @@ func physics(_ state: Int) -> CatPhysics {
     return p
 }
 
-func render(_ p: CatPhysics) -> CGImage {
-    let ctx = CGContext(data: nil, width: 720, height: 640, bitsPerComponent: 8, bytesPerRow: 0,
+func render(_ p: CatPhysics, scale: Int = 2, doraemonOnly: Bool = false,
+            keyboardCutout: CGPath? = nil) -> CGImage {
+    let ctx = CGContext(data: nil, width: 360 * scale, height: 320 * scale, bitsPerComponent: 8, bytesPerRow: 0,
                         space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-    ctx.translateBy(x: 0, y: 640); ctx.scaleBy(x: 2, y: -2)
-    CatRenderer.draw(in: ctx, physics: p, showPermissionPill: false)
+    ctx.translateBy(x: 0, y: CGFloat(320 * scale)); ctx.scaleBy(x: CGFloat(scale), y: -CGFloat(scale))
+    if doraemonOnly {
+        DoraemonRenderer.bundled!.draw(in: ctx, physics: p, eyeColor: NSColor.cyan.cgColor,
+                                      keyboardDeck: keyboardCutout ?? CGMutablePath())
+    } else {
+        CatRenderer.draw(in: ctx, physics: p, showPermissionPill: false)
+    }
     return ctx.makeImage()!
 }
 func save(_ image: CGImage, _ name: String) throws {
     let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])!
     try data.write(to: output.appendingPathComponent(name))
 }
+
+func renderMouseOnly(_ p: CatPhysics) -> CGImage {
+    let ctx = CGContext(data: nil, width: 720, height: 640, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.translateBy(x: 0, y: 640); ctx.scaleBy(x: 2, y: -2)
+    let hand = DoraemonRenderer.dragHands(p).left
+    ctx.concatenate(CharacterDragPose(p).pointerTransform(physics: p, to: hand))
+    CatRenderer.drawMouse(in: ctx, physics: p, kbSkin: RenderSettings.shared.activeKeyboardSkin)
+    return ctx.makeImage()!
+}
 func crop(_ image: CGImage, _ rect: CGRect) -> Data {
     let cropped = image.cropping(to: rect)!
     return cropped.dataProvider!.data! as Data
+}
+
+func inkRows(in region: CGRect, of image: CGImage) -> Int {
+    let bytes = image.dataProvider!.data! as Data
+    return bytes.withUnsafeBytes { (pixels: UnsafeRawBufferPointer) in
+        (Int(region.minY)..<Int(region.maxY)).filter { y in
+            (Int(region.minX)..<Int(region.maxX)).contains { x in
+                let offset = y * image.bytesPerRow + x * 4
+                return pixels[offset] < 70 && pixels[offset + 1] < 70
+                    && pixels[offset + 2] < 70 && pixels[offset + 3] > 220
+            }
+        }.count
+    }
+}
+
+func opaqueConnected(in image: CGImage, from start: CGPoint, to end: CGPoint, scale: Int) -> Bool {
+    let width = image.width, height = image.height
+    let startIndex = Int(start.y * CGFloat(scale)) * width + Int(start.x * CGFloat(scale))
+    let endIndex = Int(end.y * CGFloat(scale)) * width + Int(end.x * CGFloat(scale))
+    let bytes = image.dataProvider!.data! as Data
+    return bytes.withUnsafeBytes { (pixels: UnsafeRawBufferPointer) in
+        var visited = [Bool](repeating: false, count: width * height)
+        var pending = [startIndex]
+        while let index = pending.popLast() {
+            if visited[index] { continue }
+            visited[index] = true
+            let x = index % width, y = index / width
+            if pixels[y * image.bytesPerRow + x * 4 + 3] < 200 { continue }
+            if index == endIndex { return true }
+            if x > 0 { pending.append(index - 1) }
+            if x + 1 < width { pending.append(index + 1) }
+            if y > 0 { pending.append(index - width) }
+            if y + 1 < height { pending.append(index + width) }
+        }
+        return false
+    }
 }
 
 func highlight(in region: CGRect, of image: CGImage) -> (center: CGPoint, area: Int) {
@@ -214,6 +266,15 @@ for coat in [CatCoatTheme.doraemon, .pikachu] {
         pose.scruffSwingY.value = 0
         pose.headTilt.value = 0.4
         let hanging = render(pose)
+        if coat == .doraemon && swing == 0 {
+            // Check the inner edges just below the collar, where the seated mask
+            // used to erase the hanging sleeves. These strips exclude the hands.
+            for region in [CGRect(x: 260, y: 332, width: 8, height: 12),
+                           CGRect(x: 391, y: 332, width: 9, height: 12)] {
+                precondition(inkRows(in: region, of: hanging) >= 10,
+                             "Doraemon's hanging arm has lost its black inner outline")
+            }
+        }
         precondition(crop(seated, CGRect(x: 140, y: 40, width: 440, height: 530)) !=
                      crop(hanging, CGRect(x: 140, y: 40, width: 440, height: 530)), "Missing hanging pose")
         try save(hanging, "\(name)-drag-\(Int(swing)).png")
@@ -223,3 +284,108 @@ for coat in [CatCoatTheme.doraemon, .pikachu] {
     try save(render(pose), "\(name)-drag-tablet.png")
 }
 print("PASS: Doraemon and Pikachu keep device size and keyboard clearance as they lift and swing")
+print("PASS: both Doraemon hanging arms retain continuous black inner outlines below the collar")
+
+let shoulderPose = CatPhysics()
+shoulderPose.scruffDrag.value = 1
+shoulderPose.headTilt.value = 0.4
+for scale in [1, 2, 3, 4] {
+    let image = render(shoulderPose, scale: scale, doraemonOnly: true)
+    let bytes = image.dataProvider!.data! as Data
+    bytes.withUnsafeBytes { (pixels: UnsafeRawBufferPointer) in
+        // Flat blue areas crossing the two shoulder joins, away from the collar,
+        // belly and arm outlines. Any dark diagonal here is an unwanted seam.
+        for region in [CGRect(x: 122, y: 155.5, width: 8, height: 4.5),
+                       CGRect(x: 200, y: 155, width: 6, height: 5)] {
+            for y in Int(ceil(region.minY * CGFloat(scale)))..<Int(region.maxY * CGFloat(scale)) {
+                for x in Int(region.minX * CGFloat(scale))..<Int(region.maxX * CGFloat(scale)) {
+                    let offset = y * image.bytesPerRow + x * 4
+                    // Image resampling can slightly brighten the coat at 1x;
+                    // the unwanted butt-cap fringe instead darkens it.
+                    precondition(pixels[offset] <= 3 && pixels[offset + 1] >= 156
+                                 && pixels[offset + 2] >= 219 && pixels[offset + 3] >= 250,
+                                 "Doraemon has a dark seam across the shoulder at scale \(scale), pixel \(x),\(y)")
+                }
+            }
+        }
+    }
+}
+RenderSettings.shared.coatTheme = .doraemon
+for lift in [0.25, 0.5, 0.75, 1.0] as [CGFloat] {
+    shoulderPose.scruffDrag.value = lift
+    for swing in [-1.0, 0.0, 1.0] as [CGFloat] {
+        shoulderPose.scruffSwing.value = swing
+        shoulderPose.scruffSwingY.value = swing
+        try save(render(shoulderPose), "doraemon-lift-\(Int(lift * 100))-swing-\(Int(swing)).png")
+    }
+}
+print("PASS: Doraemon's shoulder joins remain flat blue without diagonal seams at 1x, 2x, 3x and 4x")
+
+// Hide the entire torso as a deliberately oversized carried keyboard would.
+// Both foreground arms must still join the head through the collar, rather
+// than ending in an exposed diagonal cap on top of the keyboard.
+let fullKeyboardCutout = CGPath(rect: CGRect(origin: .zero, size: CatPhysics.canvasSize), transform: nil)
+let occludedPose = CatPhysics()
+occludedPose.scruffDrag.value = 1
+for scale in [1, 2, 4] {
+    for swing in [-1.0, 0.0, 1.0] as [CGFloat] {
+        occludedPose.scruffSwing.value = swing
+        for vertical in [-1.0, 1.0] as [CGFloat] {
+            occludedPose.scruffSwingY.value = vertical
+            occludedPose.headTilt.value = vertical * 0.5
+            let foreground = render(occludedPose, scale: scale, doraemonOnly: true,
+                                    keyboardCutout: fullKeyboardCutout)
+            let hands = DoraemonRenderer.dragHands(occludedPose)
+            for hand in [hands.left, hands.right] {
+                precondition(opaqueConnected(in: foreground, from: hand, to: CGPoint(x: 184, y: 90), scale: scale),
+                             "A foreground Doraemon arm is disconnected above the keyboard at scale \(scale), swing \(swing), vertical \(vertical)")
+            }
+        }
+    }
+}
+print("PASS: both Doraemon foreground arms stay connected to the collar when the keyboard hides the torso, across scales and swings")
+
+RenderSettings.shared.coatTheme = .doraemon
+let mousePose = CatPhysics()
+mousePose.bodySquash.value = 1.16
+mousePose.headTilt.value = 0.4
+for lift in [0.5, 1.0] as [CGFloat] {
+    mousePose.scruffDrag.value = lift
+    for swing in [-1.0, 0.0, 1.0] as [CGFloat] {
+        mousePose.scruffSwing.value = swing
+        for vertical in [-1.0, 0.0, 1.0] as [CGFloat] {
+            mousePose.scruffSwingY.value = vertical
+            let mouse = renderMouseOnly(mousePose)
+            let foreground = render(mousePose, doraemonOnly: true, keyboardCutout: fullKeyboardCutout)
+            let scene = render(mousePose)
+            let reference = mouse.dataProvider!.data! as Data
+            let hands = foreground.dataProvider!.data! as Data
+            let actual = scene.dataProvider!.data! as Data
+            var visibleMousePixels = 0
+            reference.withUnsafeBytes { (expected: UnsafeRawBufferPointer) in
+                hands.withUnsafeBytes { (mask: UnsafeRawBufferPointer) in
+                    actual.withUnsafeBytes { (pixels: UnsafeRawBufferPointer) in
+                        for y in 0..<mouse.height {
+                            for x in 0..<mouse.width {
+                                let offset = y * mouse.bytesPerRow + x * 4
+                                // Only the foreground hands may cover the opaque mouse.
+                                if expected[offset + 3] != 255 || mask[offset + 3] != 0 { continue }
+                                visibleMousePixels += 1
+                                for channel in 0..<4 {
+                                    precondition(abs(Int(pixels[offset + channel]) - Int(expected[offset + channel])) <= 2,
+                                                 "A Doraemon foot hides the carried mouse at lift \(lift), swing \(swing), vertical \(vertical)")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            precondition(visibleMousePixels > 50, "The carried mouse is hidden by the hands")
+            if lift == 1 && swing == 0 && vertical == 0 {
+                try save(mouse, "mouse-reference.png")
+                try save(foreground, "mouse-hand-mask.png")
+            }
+        }
+    }
+}
+print("PASS: Doraemon's carried mouse stays in front of the feet and behind the hands in 18 lifting/swinging poses")

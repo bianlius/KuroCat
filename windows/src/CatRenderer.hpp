@@ -453,23 +453,29 @@ public:
         const CharacterDragPose characterDrag(physics);
         const bool carrying = characterDrag.lift > 0 && (doraemon || pikachu);
         CharacterDragPose::Hands hands{};
-        GraphicsState pointerState{};
         if (carrying) {
             hands = pikachu ? PikachuRenderer::dragHands(physics) : DoraemonRenderer::dragHands(physics);
-            const auto transform = characterDrag.pointerTransform(physics, hands.left);
-            pointerState = g.Save();
-            g.MultiplyTransform(&transform);
         }
+        const bool pointerInFrontOfFeet = carrying && doraemon;
         // 1. Mini White Mouse OR Graphics Tablet (when drawing tablet/stylus is connected!)
-        if (physics.isTabletActive) {
-            drawTablet(g, physics, settings.keyboardTheme, settings.eyeTheme);
-            if (carrying || !physics.leftPawOnMouse || scruff > 0.25f || dizzy > 0.35f || lie > 0.45f) {
-                drawParkedStylus(g, settings.keyboardTheme, settings.eyeTheme);
+        const auto drawPointer = [&] {
+            GraphicsState pointerState{};
+            if (carrying) {
+                const auto transform = characterDrag.pointerTransform(physics, hands.left);
+                pointerState = g.Save();
+                g.MultiplyTransform(&transform);
             }
-        } else {
-            drawMouse(g, physics, kbSkin);
-        }
-        if (carrying) g.Restore(pointerState);
+            if (physics.isTabletActive) {
+                drawTablet(g, physics, settings.keyboardTheme, settings.eyeTheme);
+                if (carrying || !physics.leftPawOnMouse || scruff > 0.25f || dizzy > 0.35f || lie > 0.45f) {
+                    drawParkedStylus(g, settings.keyboardTheme, settings.eyeTheme);
+                }
+            } else {
+                drawMouse(g, physics, kbSkin);
+            }
+            if (carrying) g.Restore(pointerState);
+        };
+        if (!pointerInFrontOfFeet) drawPointer();
 
         // 2. Mini 65% Mechanical Keyboard (facing cat) + Backlit Glow
         GraphicsPath keyboardDeck;
@@ -491,7 +497,11 @@ public:
         if (doraemon || pikachu) {
             const Color eyeColor = eyePrimary(settings.eyeTheme);
             if (pikachu) pikachu->draw(g, physics, eyeColor, keyboardDeck);
-            else doraemon->draw(g, physics, eyeColor, keyboardDeck);
+            else {
+                std::function<void()> heldPointer;
+                if (pointerInFrontOfFeet) heldPointer = drawPointer;
+                doraemon->draw(g, physics, eyeColor, keyboardDeck, heldPointer);
+            }
             drawSceneEffects(g, physics, settings);
             g.Restore(flipState);
             if (settings.isEditMode) {

@@ -2490,11 +2490,13 @@ enum KuroRig {
     static let doraemonWristY: CGFloat = 121.0
     static let doraemonKeyboardGripU: CGFloat = 0.73
     static let doraemonKeyboardWristY: CGFloat = 111.0
+    static let doraemonSleeveRootOverlap: CGFloat = 6.5
     static let pikachuArtGripY: CGFloat = 50.0
     static let pikachuCanvasGripY: CGFloat = 69.0
     static let pikachuWristSpread: CGFloat = 25.0
     static let pikachuWristY: CGFloat = 216.0
     static let pikachuKeyboardGripU: CGFloat = 0.54
     static let pikachuKeyboardWristY: CGFloat = 200.0
+    static let pikachuTailLiftScale: CGFloat = 1.0
 }
 // </rig:generated>

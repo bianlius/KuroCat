@@ -284,7 +284,7 @@ enum PikachuRenderer {
         let seatedAngle = sin(physics.tailPhase) * 0.045 * (1 - active) + delta * active
         let angle = seatedAngle * (1 - lift) + (1.75 - physics.scruffTailSwing.value * 0.22) * lift
         let reach = min(1.15, max(0.5, hypot(target.x - root.x, target.y - root.y) / 123))
-        let scale = (1 + (reach - 1) * active) * (1 - lift) + 0.74 * lift
+        let scale = (1 + (reach - 1) * active) * (1 - lift) + KuroRig.pikachuTailLiftScale * lift
         // Convert the downward canvas offset to figure space for tilted poses.
         let offset = CGSize(width: 0, height: 4).applying(toFigure)
         ctx.saveGState()

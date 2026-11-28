@@ -15,6 +15,7 @@ set_property(SOURCE app.rc PROPERTY OBJECT_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/resource.rc"
     "${DORAEMON_ART}/head.png"
     "${DORAEMON_ART}/body.png"
+    "${DORAEMON_ART}/collar.png"
     "${DORAEMON_ART}/hand.png"
     "${DORAEMON_ART}/foot-right.png"
     "${DORAEMON_ART}/shoulder-mask.png"

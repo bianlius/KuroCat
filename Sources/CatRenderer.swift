@@ -541,20 +541,24 @@ enum CatRenderer {
         let hands = characterDrag.lift > 0
             ? (isPikachu ? PikachuRenderer.dragHands(physics) : doraemon.map { _ in DoraemonRenderer.dragHands(physics) })
             : nil
+        let pointerInFrontOfFeet = doraemon != nil && hands != nil
         // 1. Mini White Mouse OR Graphics Tablet (when drawing tablet/stylus is connected!)
-        if let hands {
-            ctx.saveGState()
-            ctx.concatenate(characterDrag.pointerTransform(physics: physics, to: hands.left))
-        }
-        if physics.isTabletActive {
-            drawTablet(in: ctx, physics: physics, theme: settings.keyboardTheme, eyeTheme: settings.eyeTheme)
-            if hands != nil || !physics.leftPawOnMouse || scruff > 0.25 || dizzy > 0.35 || lie > 0.45 {
-                drawParkedStylus(in: ctx, theme: settings.keyboardTheme, eyeTheme: settings.eyeTheme)
+        func drawPointer() {
+            if let hands {
+                ctx.saveGState()
+                ctx.concatenate(characterDrag.pointerTransform(physics: physics, to: hands.left))
             }
-        } else {
-            drawMouse(in: ctx, physics: physics, kbSkin: kbSkin)
+            if physics.isTabletActive {
+                drawTablet(in: ctx, physics: physics, theme: settings.keyboardTheme, eyeTheme: settings.eyeTheme)
+                if hands != nil || !physics.leftPawOnMouse || scruff > 0.25 || dizzy > 0.35 || lie > 0.45 {
+                    drawParkedStylus(in: ctx, theme: settings.keyboardTheme, eyeTheme: settings.eyeTheme)
+                }
+            } else {
+                drawMouse(in: ctx, physics: physics, kbSkin: kbSkin)
+            }
+            if hands != nil { ctx.restoreGState() }
         }
-        if hands != nil { ctx.restoreGState() }
+        if !pointerInFrontOfFeet { drawPointer() }
 
         // 2. Mini Angled 65% Mechanical Keyboard + Dynamic Keycap Glow
         var keyboardTransform = hands.map { characterDrag.keyboardTransform(to: $0.right, isPikachu: isPikachu) } ?? .identity
@@ -572,7 +576,7 @@ enum CatRenderer {
                                  keyboardDeck: keyboardDeck)
         } else if let doraemon {
             doraemon.draw(in: ctx, physics: physics, eyeColor: settings.eyeTheme.primaryColor.cgColor,
-                          keyboardDeck: keyboardDeck)
+                          keyboardDeck: keyboardDeck, drawHeldPointer: pointerInFrontOfFeet ? drawPointer : nil)
         } else {
             drawStandardCatAndEffects(in: ctx, physics: physics, skin: skin,
                                       eyeTheme: settings.eyeTheme, keyboardTheme: settings.keyboardTheme,

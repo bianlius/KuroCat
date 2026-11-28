@@ -5,6 +5,7 @@ import ImageIO
 struct DoraemonRenderer {
     private let head: CGImage
     private let body: CGImage
+    private let collar: CGImage
     private let hand: CGImage
     private let rightFoot: CGImage
     private let shoulderMask: CGImage
@@ -18,9 +19,9 @@ struct DoraemonRenderer {
                 kCGImageSourceShouldCacheImmediately: true
             ] as CFDictionary)
         }
-        guard let head = image("head"), let body = image("body"), let hand = image("hand"),
+        guard let head = image("head"), let body = image("body"), let collar = image("collar"), let hand = image("hand"),
               let rightFoot = image("foot-right"), let shoulderMask = image("shoulder-mask") else { return nil }
-        return DoraemonRenderer(head: head, body: body, hand: hand, rightFoot: rightFoot, shoulderMask: shoulderMask)
+        return DoraemonRenderer(head: head, body: body, collar: collar, hand: hand, rightFoot: rightFoot, shoulderMask: shoulderMask)
     }()
 
     private static let ink = CGColor(srgbRed: 0.044, green: 0.067, blue: 0.085, alpha: 1)
@@ -96,15 +97,15 @@ struct DoraemonRenderer {
         return nil
     }
 
-    func draw(in ctx: CGContext, physics: CatPhysics, eyeColor: CGColor, keyboardDeck: CGPath) {
+    func draw(in ctx: CGContext, physics: CatPhysics, eyeColor: CGColor, keyboardDeck: CGPath,
+              drawHeldPointer: (() -> Void)? = nil) {
         let pose = Pose(physics)
         let toSprite = pose.body.inverted()
 
         ctx.saveGState()
+        ctx.saveGState()
         ctx.interpolationQuality = .high
         ctx.concatenate(pose.body)
-
-        ctx.saveGState()
         let visibleBody = CGMutablePath()
         visibleBody.addRect(CGRect(origin: .zero, size: CatPhysics.canvasSize), transform: toSprite)
         visibleBody.addPath(keyboardDeck, transform: toSprite)
@@ -116,11 +117,26 @@ struct DoraemonRenderer {
         drawSprite(rightFoot, in: ctx)
         ctx.restoreGState()
 
+        // Carried peripherals sit in front of the feet and behind the gripping hands.
+        // Run the scene callback in canvas space before entering the arm transform.
+        drawHeldPointer?()
+        ctx.interpolationQuality = .high
+        ctx.concatenate(pose.body)
         let (leftHand, rightHand) = pose.wrists(physics)
-        drawSleeve(in: ctx, wrist: leftHand.point, reach: leftHand.reach, isLeft: true)
-        drawSleeve(in: ctx, wrist: rightHand.point, reach: rightHand.reach, isLeft: false)
+        drawSleeve(in: ctx, wrist: leftHand.point, reach: leftHand.reach, lift: pose.drag.lift, isLeft: true)
+        drawSleeve(in: ctx, wrist: rightHand.point, reach: rightHand.reach, lift: pose.drag.lift, isLeft: false)
         drawHand(in: ctx, at: leftHand.point)
         drawHand(in: ctx, at: rightHand.point)
+
+        // The hanging sleeves reach under the collar in front of the carried keyboard.
+        // Restore the collar above their roots so the arms join the neck cleanly.
+        if pose.drag.lift > 0 {
+            ctx.saveGState()
+            ctx.concatenate(pose.torso)
+            ctx.concatenate(Self.figureArtwork)
+            drawSprite(collar, in: ctx)
+            ctx.restoreGState()
+        }
 
         ctx.concatenate(Self.figureArtwork)
         ctx.concatenate(pose.head)
@@ -144,7 +160,7 @@ struct DoraemonRenderer {
         drawSprite(hand, in: ctx, offset: CGPoint(x: point.x - Self.handCenter.x, y: point.y - Self.handCenter.y))
     }
 
-    private func drawSleeve(in ctx: CGContext, wrist: CGPoint, reach: CGFloat, isLeft: Bool) {
+    private func drawSleeve(in ctx: CGContext, wrist: CGPoint, reach: CGFloat, lift: CGFloat, isLeft: Bool) {
         let side: CGFloat = isLeft ? -1 : 1
         let relaxed = 1 - reach
         let shoulder = CGPoint(x: 64 + side * (20 + 0.5 * relaxed), y: 86).applying(Self.figureArtwork)
@@ -158,8 +174,13 @@ struct DoraemonRenderer {
                                       y: shoulder.y + shoulderDown * shoulderCurveLength)
         let wristControl = CGPoint(x: wrist.x - dx * 0.33, y: wrist.y - dy * 0.33)
 
+        let tangentLength = hypot(shoulderOutward, shoulderDown)
+        let rootOverlap = KuroRig.doraemonSleeveRootOverlap * lift
+        let root = CGPoint(x: shoulder.x - shoulderOutward / tangentLength * rootOverlap,
+                           y: shoulder.y - shoulderDown / tangentLength * rootOverlap)
         let sleeve = CGMutablePath()
-        sleeve.move(to: shoulder)
+        sleeve.move(to: root)
+        if rootOverlap > 0 { sleeve.addLine(to: shoulder) }
         sleeve.addCurve(to: wrist, control1: shoulderControl, control2: wristControl)
         let sleeveWidth: CGFloat = 10.9
         let outlineWidth: CGFloat = 1.45
@@ -168,6 +189,16 @@ struct DoraemonRenderer {
         ctx.setLineCap(.butt)
         ctx.setStrokeColor(Self.ink)
         ctx.setLineWidth(sleeveWidth + outlineWidth)
+
+        // The seated shoulder mask hides the inner edge of a downward, hanging arm.
+        // Fade in its full outline as it lifts, before painting the blue sleeve.
+        if lift > 0 {
+            ctx.saveGState()
+            ctx.setAlpha(lift)
+            ctx.addPath(sleeve)
+            ctx.strokePath()
+            ctx.restoreGState()
+        }
 
         // Keep the short inner edge visible just above the hand in the resting pose.
         if relaxed > 0, let fade = Self.restingOutlineFade {
@@ -195,7 +226,16 @@ struct DoraemonRenderer {
         ctx.strokePath()
         ctx.restoreGState()
 
-        ctx.addPath(sleeve)
+        // Overlap the blue fill past the outlined butt cap. Ending both strokes
+        // on the same diagonal leaves a dark antialias fringe across the shoulder.
+        let blueSleeve = CGMutablePath()
+        let overlap = outlineWidth * 0.5 * lift
+        blueSleeve.move(to: CGPoint(x: root.x - shoulderOutward / tangentLength * overlap,
+                                   y: root.y - shoulderDown / tangentLength * overlap))
+        if overlap > 0 { blueSleeve.addLine(to: root) }
+        if rootOverlap > 0 { blueSleeve.addLine(to: shoulder) }
+        blueSleeve.addCurve(to: wrist, control1: shoulderControl, control2: wristControl)
+        ctx.addPath(blueSleeve)
         ctx.setStrokeColor(Self.coatBlue)
         ctx.setLineWidth(sleeveWidth - outlineWidth)
         ctx.strokePath()

@@ -31,12 +31,14 @@ constexpr float DoraemonWristSpread = 30.0f;
 constexpr float DoraemonWristY = 121.0f;
 constexpr float DoraemonKeyboardGripU = 0.73f;
 constexpr float DoraemonKeyboardWristY = 111.0f;
+constexpr float DoraemonSleeveRootOverlap = 6.5f;
 constexpr float PikachuArtGripY = 50.0f;
 constexpr float PikachuCanvasGripY = 69.0f;
 constexpr float PikachuWristSpread = 25.0f;
 constexpr float PikachuWristY = 216.0f;
 constexpr float PikachuKeyboardGripU = 0.54f;
 constexpr float PikachuKeyboardWristY = 200.0f;
+constexpr float PikachuTailLiftScale = 1.0f;
 // </rig:generated>
 
 struct Vec2 { float x, y; };
